@@ -23,9 +23,16 @@ from flood_adapt.objects.forcing.unit_system import UnitTypesLength, UnitfulLeng
 from flood_adapt.config.config import Settings
 
 
+def get_events_freq(fa, name_event_set):
+    event_set = fa.get_event(name_event_set)
+    freqs = []
+    for sub in event_set.sub_events:
+        freqs.append(sub.frequency)
+        
+    return freqs
 
 # 1. Create the matrix with all scenario names/combinations
-def create_combinations_matrix(fa, name_event_set, slr, unit, fp_height, timestep):
+def create_combinations_matrix(fa, name_event_set, slr, unit, fp_height):
     # Allow fp_height to be a list or a single value
     if not isinstance(fp_height, (list, tuple, np.ndarray)):
         fp_heights = [fp_height]
@@ -35,14 +42,13 @@ def create_combinations_matrix(fa, name_event_set, slr, unit, fp_height, timeste
     event_set = fa.get_event(name_event_set)
     events = []
     for sub in event_set.sub_events:
-        if sub.frequency <= timestep:
-            events.append(sub.name)
-            src_dir = fa.database.events.input_path / name_event_set / sub.name
-            dst_dir = fa.database.events.input_path / sub.name
-            if src_dir.exists() and src_dir.is_dir():
-                shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True)
-            else:
-                print(f"Source {src_dir} does not exist")
+        events.append(sub.name)
+        src_dir = fa.database.events.input_path / name_event_set / sub.name
+        dst_dir = fa.database.events.input_path / sub.name
+        if src_dir.exists() and src_dir.is_dir():
+            shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True)
+        else:
+            print(f"Source {src_dir} does not exist")
 
     projections = []
     se_change = SocioEconomicChange(population_growth_existing=0, economic_growth=0)
@@ -130,11 +136,11 @@ def run_scenarios(fa, scenarios):
             print(f"Scenario {scen.name} already run.")
 
 # 4. Read results and return the dataset
-def read_impacts_dataset(fa, projections, strategies, events, slr):
+def read_impacts_dataset(fa, projections, strategies, events, slr, events_freq=None):
     scen_name = f"{projections[0].name}_{events[0]}_{strategies[0].name}"
     gdf_temp = fa.get_building_footprint_impacts(scen_name)
     ds_impacts = xr.Dataset(coords={
-            "object_id": pd.to_numeric(gdf_temp["Object ID"], errors="coerce").astype("Int64"),
+            "object_id": gdf_temp["Object ID"].values,
             "slr": slr,
             "strategy": [s.name for s in strategies],
             "event": events
@@ -150,6 +156,10 @@ def read_impacts_dataset(fa, projections, strategies, events, slr):
             )
         }
     )
+    ds_impacts.coords['object_id'].attrs['max_pot_dmg'] = gdf_temp["Max Potential Damage: structure"].values + gdf_temp["Max Potential Damage: content"].values
+    ds_impacts.coords['object_id'].attrs['primary_object_type'] = gdf_temp["Primary Object Type"].astype(str).to_list()
+
+    
     for strat in strategies:
         for proj in projections:
             for event_name in events:
@@ -167,14 +177,17 @@ def create_lookup_table(
         slr: np.array = np.arange(0, 1.1, 0.25),
         unit: UnitTypesLength = UnitTypesLength.meters,
         fp_height: float | list[float] | tuple | np.ndarray = 0.5,
-        timestep: float = 1,
     ) -> xr.Dataset:
 
-    events, projections, strategies, scenarios, flood_proofs = create_combinations_matrix(fa, name_event_set, slr, unit, fp_height, timestep)
+    events, projections, strategies, scenarios, flood_proofs = create_combinations_matrix(fa, name_event_set, slr, unit, fp_height)
     save_combinations_to_database(fa, projections, strategies, scenarios, flood_proofs)
     run_scenarios(fa, scenarios)
     ds_impacts = read_impacts_dataset(fa, projections, strategies, events, slr)
     
+    events_freq = get_events_freq(fa, name_event_set)
+    
+    ds_impacts.coords['event'].attrs['freq'] = events_freq
+
     return ds_impacts
 
 
