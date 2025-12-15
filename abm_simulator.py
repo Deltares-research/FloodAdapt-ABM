@@ -2,6 +2,7 @@ import numpy as np
 
 
 class ABMSimulator:
+
     def __init__(self, ds_impacts, fa, years, dt, slr_scenario_name, n_seq, damage_threshold=0.3, seed=42, start_year=2020):
         """
         ds_impacts: xarray dataset with impact values
@@ -163,8 +164,12 @@ class ABMSimulator:
         """
         damage_history = np.zeros((self.n_seq, self.n_households, self.years))
         floodproofed = np.zeros((self.n_seq, self.n_households, self.years), dtype=bool)
+        # Save per-event damage: [sequence, household, year, event]
+        n_events = len(self.event_names)
+        damage_history_per_event = np.zeros((self.n_seq, self.n_households, self.years, n_events))
 
         for seq_idx in range(self.n_seq):
+            print(f"Evaluating sequence {seq_idx+1}/{self.n_seq}...")
             is_floodproofed = np.zeros(self.n_households, dtype=bool)
             for year_idx in range(self.years):
                 slr_val = self.get_slr_for_year(year_idx)
@@ -172,20 +177,25 @@ class ABMSimulator:
                 # Vectorized damage calculation for all households
                 # For each event, get damages for all households, then sum over events
                 total_damage = np.zeros(self.n_households)
+                # Track per-event damages for this year
+                year_event_damage = np.zeros((self.n_households, n_events))
                 for event in year_events:
                     # For all households, select strategy based on floodproofed state
                     strats = np.where(is_floodproofed, 'floodproof_all_0', 'no_measures')
                     # Vectorized lookup for all households
-                    # Use list comprehension to call slr_damage_lookup for all households
                     damages = self.slr_damage_lookup(
-                            slr_val,
-                            event,
-                            strats,
-                            method='linear'
-                            )
-
+                        slr_val,
+                        event,
+                        strats,
+                        method='linear'
+                    )
                     total_damage += damages
+                    # Save per-event damage in the correct event index
+                    if event in self.event_names:
+                        event_idx = self.event_names.index(event)
+                        year_event_damage[:, event_idx] = damages
                 damage_history[seq_idx, :, year_idx] = total_damage
+                damage_history_per_event[seq_idx, :, year_idx, :] = year_event_damage
                 floodproofed[seq_idx, :, year_idx] = is_floodproofed
                 # Vectorized floodproofing decision
                 not_floodproofed = ~is_floodproofed
@@ -194,40 +204,160 @@ class ABMSimulator:
                 valid = not_floodproofed & with_pot_dmg
                 threshold_exceeded[valid] = (total_damage[valid] / self.max_pot_dmg[valid]) > self.damage_threshold
                 is_floodproofed = is_floodproofed | threshold_exceeded
-        
+
         self.damage_history = damage_history
+        self.damage_history_per_event = damage_history_per_event
         self.floodproofed = floodproofed
-        
-        return damage_history, floodproofed
-    
-    def plot_event_sequences(self, seq_max=20):
+        self.has_run = True
+
+        # Compute and store baseline damages (no floodproofing, always 'no_measures')
+        self._compute_baseline_no_floodproofing()
+
+    def _compute_baseline_no_floodproofing(self):
         """
-        Plot the first seq_max event sequences as a raster plot.
+        Compute and store baseline damages (per event and total) for all sequences,
+        assuming 'no_measures' strategy for all households and all years (no floodproofing).
+        Stores:
+            self.baseline_damage_history: [sequence, household, year] array of damages
+            self.baseline_damage_history_per_event: [sequence, household, year, event] array of per-event damages
+        """
+        n_events = len(self.event_names)
+        baseline_damage_history = np.zeros((self.n_seq, self.n_households, self.years))
+        baseline_damage_history_per_event = np.zeros((self.n_seq, self.n_households, self.years, n_events))
+        for seq_idx in range(self.n_seq):
+            for year_idx in range(self.years):
+                slr_val = self.get_slr_for_year(year_idx)
+                year_events = self.sequences[seq_idx][year_idx]
+                total_damage = np.zeros(self.n_households)
+                year_event_damage = np.zeros((self.n_households, n_events))
+                for event in year_events:
+                    strats = np.full(self.n_households, 'no_measures', dtype=object)
+                    damages = self.slr_damage_lookup(
+                        slr_val,
+                        event,
+                        strats,
+                        method='linear'
+                    )
+                    total_damage += damages
+                    if event in self.event_names:
+                        event_idx = self.event_names.index(event)
+                        year_event_damage[:, event_idx] = damages
+                baseline_damage_history[seq_idx, :, year_idx] = total_damage
+                baseline_damage_history_per_event[seq_idx, :, year_idx, :] = year_event_damage
+        self.baseline_damage_history = baseline_damage_history
+        self.baseline_damage_history_per_event = baseline_damage_history_per_event
+           
+    def plot_event_damage_timeseries(self, seq_id, figsize=(12, 6)):
+        """
+        Plots a time series for a given sequence id, showing:
+        - For each time step (year), a stacked column of dots for each event that occurred (stacked from bottom)
+        - A bar plot of the total damage for that time step
+        Args:
+            seq_id (int): The sequence index to plot
+            figsize (tuple): Figure size for the plot
         """
         import matplotlib.pyplot as plt
-        event_names = self.event_names
-        sequences = self.sequences
-        years = self.years
-        fig, axes = plt.subplots(1, 1, figsize=(8, 8))
-        colors = {event_id: plt.cm.tab10(i) for i, event_id in enumerate(event_names)}
-        yticklabels = []
-        for seq_idx in range(min(seq_max, len(sequences))):
-            ax = axes
-            for year_idx, year_events in enumerate(sequences[seq_idx]):
-                for marker_offset, event_id in enumerate(sorted(year_events)):
-                    ax.scatter(year_idx, marker_offset*0.15+seq_idx,
-                              color=colors[event_id],
-                              s=50,
-                              marker='o',
-                              label=event_id if year_idx == 0 else "")
-            yticklabels.append(f"Seq {seq_idx}")
+        from matplotlib import cm
+        import numpy as np
+
+        years = np.arange(self.start_year, self.start_year + self.years)
+        # Get the event sequence for the given seq_id
+        seq = self.sequences[seq_id]
+        # seq is a list of event names (or ids) for each time step
+        # If multiple events per year, seq should be a list of lists
+        # If not, convert to list of lists
+        if not isinstance(seq[0], (list, np.ndarray)):
+            seq = [[e] if e is not None else [] for e in seq]
+
+        # Get damages for each time step (sum of all events in that year)
+        # Assume self.occ is shape (n_seq, years, n_events), 1 if event occurred
+        # and self.ds_impacts has damages for each event
+        damages = []
+        for t, events in enumerate(seq):
+            total_damage = 0
+            for event in events:
+                # If event is index, get name
+                if isinstance(event, (int, np.integer)):
+                    event_name = self.event_names[event]
+                else:
+                    event_name = event
+                # Get damage for this event (assume damages are in ds_impacts)
+                # This may need to be adapted to your data structure
+                try:
+                    dmg = float(self.ds_impacts.sel(event=event_name)["total_damage"].values.sum())
+                except Exception:
+                    dmg = 0
+                total_damage += dmg
+            damages.append(total_damage)
+
+        # Prepare event color mapping
+        unique_events = list({e for events in seq for e in events})
+        cmap = cm.get_cmap('tab20', len(unique_events))
+        event2color = {e: cmap(i) for i, e in enumerate(unique_events)}
+
+        fig, ax1 = plt.subplots(figsize=figsize)
+
+        # Plot stacked dots for events
+        for t, events in enumerate(seq):
+            for i, event in enumerate(events):
+                color = event2color[event]
+                ax1.scatter(t, i, color=color, s=60, marker='o', edgecolor='k', zorder=3)
+
+        # Set y-limits for event stack
+        max_stack = max(len(events) for events in seq)
+        ax1.set_ylim(-0.5, max_stack + 0.5)
+        ax1.set_ylabel('Events (stacked dots)')
+        ax1.set_xticks(np.arange(len(years)))
+        ax1.set_xticklabels(years, rotation=45)
+
+        # Twin axis for damage bar plot
+        ax2 = ax1.twinx()
+        ax2.bar(np.arange(len(years)), damages, alpha=0.3, color='red', width=0.7, zorder=2)
+        ax2.set_ylabel('Total Damage')
+
+        # Legend for events
+        handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=event2color[e], markeredgecolor='k', label=str(e), markersize=8) for e in unique_events]
+        ax1.legend(handles=handles, title='Event', bbox_to_anchor=(1.05, 1), loc='upper left')
+
+        ax1.set_title(f'Time Series of Events and Damages (Sequence {seq_id})')
+        fig.tight_layout()
+        plt.show()
+        
+    def plot_total_damage_statistics(self, figsize=(12, 6)):
+        """
+        Plot total damages statistics (mean and 5-95 percentile) over all sequences for:
+        - Actual simulation (with floodproofing)
+        - Baseline (no floodproofing)
+        Shows average line and hatched area for 5-95 percentile for both scenarios.
+        """
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        years = np.arange(self.start_year, self.start_year + self.years)
+        # Aggregate over households (sum damages per year per sequence)
+        sim_total = self.damage_history.sum(axis=1)  # shape: (n_seq, years)
+        base_total = self.baseline_damage_history.sum(axis=1)  # shape: (n_seq, years)
+
+        def stats(arr):
+            mean = np.mean(arr, axis=0)
+            p5 = np.percentile(arr, 5, axis=0)
+            p95 = np.percentile(arr, 95, axis=0)
+            return mean, p5, p95
+
+        sim_mean, sim_p5, sim_p95 = stats(sim_total)
+        base_mean, base_p5, base_p95 = stats(base_total)
+
+        fig, ax = plt.subplots(figsize=figsize)
+        # Baseline (no floodproofing)
+        ax.plot(years, base_mean, label='Baseline (no floodproofing)', color='tab:blue')
+        ax.fill_between(years, base_p5, base_p95, color='tab:blue', alpha=0.2, hatch='//', edgecolor='tab:blue', linewidth=0.0)
+        # Actual simulation
+        ax.plot(years, sim_mean, label='Simulation (with floodproofing)', color='tab:orange')
+        ax.fill_between(years, sim_p5, sim_p95, color='tab:orange', alpha=0.2, hatch='\\\\', edgecolor='tab:orange', linewidth=0.0)
+
         ax.set_xlabel('Year')
-        ax.set_yticks([i for i in range(min(seq_max, len(sequences)))])
-        ax.set_yticklabels(yticklabels)
-        ax.set_xlim(-0.5, years - 0.5)
-        ax.grid(True, alpha=0.3)
-        ax.set_xticks(range(0, years, 5))
-        handles = [plt.scatter([], [], color=colors[e], s=200, marker='o') for e in event_names]
-        fig.legend(handles, event_names, loc='upper center', bbox_to_anchor=(0.5, 0), ncol=len(event_names))
-        plt.tight_layout()
+        ax.set_ylabel('Total Damage')
+        ax.set_title('Total Damages: Simulation vs Baseline')
+        ax.legend()
+        fig.tight_layout()
         plt.show()
