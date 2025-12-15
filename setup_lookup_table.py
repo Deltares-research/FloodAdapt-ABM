@@ -23,87 +23,65 @@ from flood_adapt.objects.forcing.unit_system import UnitTypesLength, UnitfulLeng
 from flood_adapt.config.config import Settings
 
 
-def setup_lookup_table(
-        fa: FloodAdapt, 
-        name_event_set: str, 
-        slr: np.array = np.arange(0, 1.1, 0.25), 
-        unit: UnitTypesLength = UnitTypesLength.meters, 
-        fp_height: float = 0.5, 
-        timestep: float=1, 
-        run_scenarios: bool=False) -> xr.Dataset:
 
+# 1. Create the matrix with all scenario names/combinations
+def create_combinations_matrix(fa, name_event_set, slr, unit, fp_height, timestep):
+    # Allow fp_height to be a list or a single value
+    if not isinstance(fp_height, (list, tuple, np.ndarray)):
+        fp_heights = [fp_height]
+    else:
+        fp_heights = list(fp_height)
 
-    fn_event_set = fa.database.database_path / fa.database.site.name / "input" / "events" / name_event_set / f"{name_event_set}.toml"
-    event_set = EventSet.load_file(fn_event_set)
+    event_set = fa.get_event(name_event_set)
     events = []
-
-    # Copy sub_events directories to events folder
     for sub in event_set.sub_events:
         if sub.frequency <= timestep:
             events.append(sub.name)
-            src_dir = fa.database.database_path / fa.database.site.name / "input" / "events" / name_event_set / sub.name
-            dst_dir = fa.database.database_path / fa.database.site.name / "input" / "events" / sub.name
-            
+            src_dir = fa.database.events.input_path / name_event_set / sub.name
+            dst_dir = fa.database.events.input_path / sub.name
             if src_dir.exists() and src_dir.is_dir():
                 shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True)
-                print(f"Copied {sub.name}")
             else:
                 print(f"Source {src_dir} does not exist")
 
-
-    # create projections for all SLR values
     projections = []
-    se_change = SocioEconomicChange(population_growth_existing=0,
-                            economic_growth=0)
-    for nn,s in enumerate(slr):
+    se_change = SocioEconomicChange(population_growth_existing=0, economic_growth=0)
+    for nn, s in enumerate(slr):
         phys_proj = PhysicalProjection(sea_level_rise=UnitfulLength(value=s, units=unit))
         proj = Projection(
             name=f"SLR_{nn}",
             description=f"Sea level rise of {s:.2f} in {unit}",
-            physical_projection=phys_proj, 
+            physical_projection=phys_proj,
             socio_economic_change=se_change
         )
-        
-        try:
-            fa.save_projection(proj)
-        except AlreadyExistsError:
-            print(f"Projection {proj.name} already exists in database")
         projections.append(proj)
 
-
-    # Create one strategy without measures and one with floodproofing all buildings
-    flood_proof = FloodProof(
-        name="floodproof_all",
-        description="Floodproofing all buildings.",
-        selection_type=SelectionType.all,
-        property_type="ALL",
-        elevation=UnitfulLength(value=fp_height, units=unit)
-    )
-    try: 
-        fa.save_measure(flood_proof)
-    except AlreadyExistsError:
-        print(f"Measure {flood_proof.name} already exists in database")
-
+    # Create all floodproof measures and strategies for each fp_height
+    flood_proofs = []
     strategies = [
         Strategy(
             name="no_measures",
             description="No measures",
             measures=[],
-        ),
-        Strategy(
-            name="floodproof_all",
-            description="Floodproof all buildings",
-            measures=[flood_proof.name],
         )
     ]
-    # save strategies
-    for strat in strategies:
-        try: 
-            fa.save_strategy(strat)
-        except AlreadyExistsError:
-            print(f"Strategy {strat.name} already exists in database")
+    for kk, h in enumerate(fp_heights):
+        flood_proof = FloodProof(
+            name=f"floodproof_all_{kk}",
+            description=f"Floodproofing all buildings by {h} {unit}.",
+            selection_type=SelectionType.all,
+            property_type="ALL",
+            elevation=UnitfulLength(value=h, units=unit)
+        )
+        flood_proofs.append(flood_proof)
+        strategies.append(
+            Strategy(
+                name=f"floodproof_all_{kk}",
+                description=f"Floodproofing all buildings by {h} {unit}.",
+                measures=[flood_proof.name],
+            )
+        )
 
-    # Create and save scenarios for all combinations of events, projections, and strategies
     scenarios = []
     for strat in strategies:
         for proj in projections:
@@ -115,50 +93,88 @@ def setup_lookup_table(
                     projection=proj.name,
                     strategy=strat.name,
                 )
-                try: 
-                    fa.save_scenario(scen)
-                except AlreadyExistsError:
-                    print(f"Scenario {scen.name} already exists in database")
                 scenarios.append(scen)
+    return events, projections, strategies, scenarios, flood_proofs
 
-    # run scenarios
-    if run_scenarios:
-        for scen in scenarios[1:]:
-            print(scen.name)
+# 2. Save these in the FloodAdapt database
+def save_combinations_to_database(fa, projections, strategies, scenarios, flood_proofs):
+    for proj in projections:
+        try:
+            fa.save_projection(proj)
+        except AlreadyExistsError:
+            print(f"Projection {proj.name} already exists in database")
+    for flood_proof in flood_proofs:
+        try:
+            fa.save_measure(flood_proof)
+        except AlreadyExistsError:
+            print(f"Measure {flood_proof.name} already exists in database")
+    for strat in strategies:
+        try:
+            fa.save_strategy(strat)
+        except AlreadyExistsError:
+            print(f"Strategy {strat.name} already exists in database")
+    for scen in scenarios:
+        try:
+            fa.save_scenario(scen)
+        except AlreadyExistsError:
+            print(f"Scenario {scen.name} already exists in database")
+
+# 3. Run all scenarios
+def run_scenarios(fa, scenarios):
+    scenarios_db = pd.DataFrame(fa.get_scenarios())
+    for scen in scenarios:
+        print(scen.name)
+        if not scenarios_db.loc[scenarios_db["name"] == scen.name, "finished"].values[0]:
             fa.run_scenario(scen.name)
+        else:
+            print(f"Scenario {scen.name} already run.")
 
-
-    # Arrange impacts in Dataset
-    scen_name=f"{projections[0].name}_{events[0]}_{strategies[0].name}"
+# 4. Read results and return the dataset
+def read_impacts_dataset(fa, projections, strategies, events, slr):
+    scen_name = f"{projections[0].name}_{events[0]}_{strategies[0].name}"
     gdf_temp = fa.get_building_footprint_impacts(scen_name)
-
-
     ds_impacts = xr.Dataset(coords={
             "object_id": pd.to_numeric(gdf_temp["Object ID"], errors="coerce").astype("Int64"),
-            "slr": slr, 
+            "slr": slr,
             "strategy": [s.name for s in strategies],
             "event": events
-            },
-            data_vars={
-                "inun_depth": (
-                    ["object_id", "slr", "strategy", "event"], 
-                    np.empty([len(gdf_temp["Object ID"]), len(slr), len(strategies),len(events)])
-                ),
-                "total_damage": (
-                    ["object_id", "slr", "strategy", "event"],
-                    np.empty([len(gdf_temp["Object ID"]), len(slr), len(strategies),len(events)])
-                )
-            }
+        },
+        data_vars={
+            "inun_depth": (
+                ["object_id", "slr", "strategy", "event"],
+                np.empty([len(gdf_temp["Object ID"]), len(slr), len(strategies), len(events)])
+            ),
+            "total_damage": (
+                ["object_id", "slr", "strategy", "event"],
+                np.empty([len(gdf_temp["Object ID"]), len(slr), len(strategies), len(events)])
+            )
+        }
     )
-
     for strat in strategies:
         for proj in projections:
             for event_name in events:
-                scen_name=f"{proj.name}_{event_name}_{strat.name}"
+                scen_name = f"{proj.name}_{event_name}_{strat.name}"
                 gdf_impacts = fa.get_building_footprint_impacts(scen_name)
-                ds_impacts["inun_depth"].loc[:, proj.physical_projection.sea_level_rise.value, strat.name,event_name] = gdf_impacts["Inundation Depth"].values
-                ds_impacts["total_damage"].loc[:, proj.physical_projection.sea_level_rise.value, strat.name,event_name] = gdf_impacts["Total Damage"].values
+                # TODO add api method to get impacts at the object ID level
+                ds_impacts["inun_depth"].loc[:, proj.physical_projection.sea_level_rise.value, strat.name, event_name] = gdf_impacts["Inundation Depth"].values
+                ds_impacts["total_damage"].loc[:, proj.physical_projection.sea_level_rise.value, strat.name, event_name] = gdf_impacts["Total Damage"].values
+    return ds_impacts
 
+# 5. General method
+def create_lookup_table(
+        fa: FloodAdapt,
+        name_event_set: str,
+        slr: np.array = np.arange(0, 1.1, 0.25),
+        unit: UnitTypesLength = UnitTypesLength.meters,
+        fp_height: float | list[float] | tuple | np.ndarray = 0.5,
+        timestep: float = 1,
+    ) -> xr.Dataset:
+
+    events, projections, strategies, scenarios, flood_proofs = create_combinations_matrix(fa, name_event_set, slr, unit, fp_height, timestep)
+    save_combinations_to_database(fa, projections, strategies, scenarios, flood_proofs)
+    run_scenarios(fa, scenarios)
+    ds_impacts = read_impacts_dataset(fa, projections, strategies, events, slr)
+    
     return ds_impacts
 
 
