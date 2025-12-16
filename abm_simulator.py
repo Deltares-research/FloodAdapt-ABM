@@ -126,23 +126,21 @@ class ABMSimulator:
             floodproofed: [sequence, household, year] boolean array of floodproofing state
         """
         self._compute_baseline_no_floodproofing()
-        damage_history, damage_history_per_event, floodproofed = self._calculate_damage_history(floodproofing=True, method=method)
+        damage_history, floodproofed = self._calculate_damage_history(floodproofing=True, method=method)
         self.damage_history = damage_history
-        self.damage_history_per_event = damage_history_per_event
         self.floodproofed = floodproofed
         self.has_run = True
+        print("Evaluation completed.") 
 
     def _compute_baseline_no_floodproofing(self):
         """
-        Compute and store baseline damages (per event and total) for all sequences,
+        Compute and store baseline damages for all sequences,
         assuming 'no_measures' strategy for all households and all years (no floodproofing).
         Stores:
             self.baseline_damage_history: [sequence, household, year] array of damages
-            self.baseline_damage_history_per_event: [sequence, household, year, event] array of per-event damages
         """
-        baseline_damage_history, baseline_damage_history_per_event, _ = self._calculate_damage_history(floodproofing=False, method='linear')
+        baseline_damage_history, _ = self._calculate_damage_history(floodproofing=False, method='linear')
         self.baseline_damage_history = baseline_damage_history
-        self.baseline_damage_history_per_event = baseline_damage_history_per_event
            
     def plot_event_damage_timeseries(self, seq_id, figsize=(12, 10)):
         """
@@ -310,7 +308,11 @@ class ABMSimulator:
             percentiles: tuple (min, max) or None, percentiles to plot (e.g., (5, 95)). If None, plot mean.
         """
         import matplotlib.pyplot as plt
-
+        
+        # Check if simulation has been run
+        if not hasattr(self, 'has_run') or not getattr(self, 'has_run', False):
+            raise RuntimeError("Simulation has not been run. Please call the 'run' method before plotting.")
+        
         times = np.array(self.times)
         n_years = len(times)
         width = 0.7
@@ -407,31 +409,28 @@ class ABMSimulator:
         
     def _calculate_damage_history(self, floodproofing: bool, method: str = 'linear'):
         """
-        Shared logic for calculating damage history and per-event damage.
+        Shared logic for calculating damage history.
         If floodproofing is True, applies floodproofing logic; otherwise, always uses 'no_measures'.
         Returns:
             damage_history: [sequence, household, time] array
-            damage_history_per_event: [sequence, household, time, event] array
             floodproofed: [sequence, household, time] boolean array (None if floodproofing is False)
         """
-        n_events = len(self.event_names)
         event_names_list = list(self.event_names)
-        damage_history = np.zeros((self.no_seq, self.n_households, self.time_steps))
-        damage_history_per_event = np.zeros((self.no_seq, self.n_households, self.time_steps, n_events))
+        damage_history = np.zeros((self.no_seq, self.n_households, self.time_steps), dtype=np.int64)
         floodproofed = np.zeros((self.no_seq, self.n_households, self.time_steps), dtype=bool) if floodproofing else None
 
         # full matrix lookups for no measures and floodproofing all (n_objects, n_events, n_slr_values)
-        damage_matrix_no_measures = self.slr_damage_lookup(self.slr_values, event_names_list, 'no_measures', method="linear")
+        damage_matrix_no_measures = self.slr_damage_lookup(self.slr_values, event_names_list, 'no_measures', method=method)
         if floodproofing:
-            damage_matrix_floodproofing_all = self.slr_damage_lookup(self.slr_values, event_names_list, 'floodproof_all_0', method="linear")
+            damage_matrix_floodproofing_all = self.slr_damage_lookup(self.slr_values, event_names_list, 'floodproof_all_0', method=method)
 
         for seq_idx in range(self.no_seq):
             is_last = (seq_idx == self.no_seq - 1)
             if floodproofing:
                 if is_last:
-                    print(f"Evaluating sequence {seq_idx+1}/{self.no_seq}...")
+                    print(f"[ADAPTATION] Evaluating sequence {seq_idx+1}/{self.no_seq}...")
                 else:
-                    print(f"Evaluating sequence {seq_idx+1}/{self.no_seq}...", end='\r', flush=True)
+                    print(f"[ADAPTATION] Evaluating sequence {seq_idx+1}/{self.no_seq}...", end='\r', flush=True)
             else:
                 if is_last:
                     print(f"[BASELINE] Evaluating sequence {seq_idx+1}/{self.no_seq}...")
@@ -441,7 +440,6 @@ class ABMSimulator:
             for ti in range(self.time_steps):
                 year_events = self.sequences[seq_idx][ti]
                 total_damage = np.zeros(self.n_households)
-                year_event_damage = np.zeros((self.n_households, n_events))
                 for event in year_events:
                     if event in event_names_list:
                         event_idx = event_names_list.index(event)
@@ -449,10 +447,8 @@ class ABMSimulator:
                         if floodproofing: # apply floodproofing if applicable
                             damages_floodproofing_all = damage_matrix_floodproofing_all[:, event_idx, ti]
                             damages = np.where(is_floodproofed, damages_floodproofing_all, damages)
-                        year_event_damage[:, event_idx] = damages
                         total_damage += damages
                 damage_history[seq_idx, :, ti] = total_damage
-                damage_history_per_event[seq_idx, :, ti, :] = year_event_damage
                 if floodproofing:
                     floodproofed[seq_idx, :, ti] = is_floodproofed
                     # Vectorized floodproofing decision
@@ -461,6 +457,5 @@ class ABMSimulator:
                     threshold_exceeded = np.zeros(self.n_households, dtype=bool)
                     valid = not_floodproofed & with_pot_dmg
                     threshold_exceeded[valid] = (total_damage[valid] / self.max_pot_dmg[valid]) > self.damage_threshold
-                    is_floodproofed = is_floodproofed | threshold_exceeded
-                    
-        return damage_history, damage_history_per_event, floodproofed
+                    is_floodproofed = is_floodproofed | threshold_exceeded           
+        return damage_history, floodproofed
