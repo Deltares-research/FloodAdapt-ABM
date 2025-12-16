@@ -151,7 +151,7 @@ class ABMSimulator:
         """
         Plots a time series for a given sequence id, showing:
         - For each time step (year), a stacked column of dots for each event that occurred (stacked from bottom)
-        - A bar plot of the total damage for that time step
+        - A bar plot of the total damage for that time step (from simulation results)
         Args:
             seq_id (int): The sequence index to plot
             figsize (tuple): Figure size for the plot
@@ -160,36 +160,21 @@ class ABMSimulator:
         from matplotlib import cm
         import numpy as np
 
+        # Check if simulation has been run
+        if not hasattr(self, 'has_run') or not getattr(self, 'has_run', False):
+            raise RuntimeError("Simulation has not been run. Please call the 'run' method before plotting.")
+
         # Use self.times for the time axis
         times = np.array(self.times)
         # Get the event sequence for the given seq_id
         seq = self.sequences[seq_id]
         # seq is a list of event names (or ids) for each time step
         # If multiple events per year, seq should be a list of lists
-        # If not, convert to list of lists
         if not isinstance(seq[0], (list, np.ndarray)):
             seq = [[e] if e is not None else [] for e in seq]
 
-        # Get damages for each time step (sum of all events in that year)
-        # Assume self.occ is shape (n_seq, years, n_events), 1 if event occurred
-        # and self.ds_impacts has damages for each event
-        damages = []
-        for t, events in enumerate(seq):
-            total_damage = 0
-            for event in events:
-                # If event is index, get name
-                if isinstance(event, (int, np.integer)):
-                    event_name = self.event_names[event]
-                else:
-                    event_name = event
-                # Get damage for this event (assume damages are in ds_impacts)
-                # This may need to be adapted to your data structure
-                try:
-                    dmg = float(self.ds_impacts.sel(event=event_name)["total_damage"].values.sum())
-                except Exception:
-                    dmg = 0
-                total_damage += dmg
-            damages.append(total_damage)
+        # Use calculated damages from simulation (sum over households for each year)
+        damages = self.damage_history[seq_id].sum(axis=0)
 
         # Prepare event color mapping
         unique_events = list({e for events in seq for e in events})
@@ -279,10 +264,17 @@ class ABMSimulator:
         floodproofed = np.zeros((self.no_seq, self.n_households, self.time_steps), dtype=bool) if floodproofing else None
 
         for seq_idx in range(self.no_seq):
+            is_last = (seq_idx == self.no_seq - 1)
             if floodproofing:
-                print(f"Evaluating sequence {seq_idx+1}/{self.no_seq}...")
+                if is_last:
+                    print(f"Evaluating sequence {seq_idx+1}/{self.no_seq}...")
+                else:
+                    print(f"Evaluating sequence {seq_idx+1}/{self.no_seq}...", end='\r', flush=True)
             else:
-                print(f"[BASELINE] Evaluating sequence {seq_idx+1}/{self.no_seq}...")
+                if is_last:
+                    print(f"[BASELINE] Evaluating sequence {seq_idx+1}/{self.no_seq}...")
+                else:
+                    print(f"[BASELINE] Evaluating sequence {seq_idx+1}/{self.no_seq}...", end='\r', flush=True)
             is_floodproofed = np.zeros(self.n_households, dtype=bool)
             for ti in range(self.time_steps):
                 slr_val = self.slr_times[ti]
