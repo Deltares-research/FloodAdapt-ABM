@@ -29,9 +29,9 @@ class ABMSimulator:
         event_ids = []
         for i, event in enumerate(self.ds_impacts.event.values):
             freq = self.ds_impacts.event.attrs["freq"][i]
-            # if freq <= 1.0 / self.dt:
-            probs.append(freq * self.dt)
-            event_ids.append(event)
+            if freq <= 1.0 / self.dt:
+                probs.append(freq * self.dt)
+                event_ids.append(event)
         # Simulate event occurrences
         rng = np.random.default_rng(self.seed)
         p = np.asarray(probs, dtype=float)
@@ -203,12 +203,13 @@ class ABMSimulator:
 
         import matplotlib.gridspec as gridspec
         fig = plt.figure(figsize=figsize)
-        # 4 rows: colorbar, events, damages, floodproofed; 1 column
-        gs = gridspec.GridSpec(4, 1, height_ratios=[0.5, 1, 4, 1.5], hspace=0.15)
+        # 5 rows: colorbar, events, SLR, damages, floodproofed; 1 column
+        gs = gridspec.GridSpec(5, 1, height_ratios=[0.5, 1, 1, 4, 1.5], hspace=0.15)
         cax = fig.add_subplot(gs[0])
         ax_events = fig.add_subplot(gs[1], sharex=None)
-        ax = fig.add_subplot(gs[2], sharex=ax_events)
-        ax_floodproof = fig.add_subplot(gs[3], sharex=ax_events)
+        ax_slr = fig.add_subplot(gs[2], sharex=ax_events)
+        ax = fig.add_subplot(gs[3], sharex=ax_events)
+        ax_floodproof = fig.add_subplot(gs[4], sharex=ax_events)
 
         # Plot event dots in the top axis (stacked vertically for same time step, no spacing)
         for t, events in enumerate(seq):
@@ -217,18 +218,29 @@ class ABMSimulator:
                 continue
             for i, event in enumerate(events):
                 color = event2color[event]
-                ax_events.scatter(t, i, color=color, s=60, marker='o', edgecolor='k', zorder=3)
+                ax_events.scatter(t, i*0.5, color=color, s=60, marker='o', edgecolor='k', zorder=3)
 
         # Set y-ticks for event axis to show up to max number of events
         max_stack = max(len(events) for events in seq)
         ax_events.set_ylim(-0.5, max_stack - 0.5 if max_stack > 0 else 0.5)
         ax_events.set_ylabel('Events')
-        ax_events.set_xlim(-0.5, len(times) - 0.5)
-        # Set x-ticks (but not labels) on all axes except bottom
+        # Shared x across subplots; use indices for time steps
         x = np.arange(len(times))
-        ax_events.set_xticks(x)
-        ax_events.set_xticklabels([])
         ax_events.tick_params(axis='x', which='both', bottom=True, top=False, labelbottom=False)
+        # New subplot: Sea Level Rise over time (line with markers)
+        # Ensure slr values align with time steps
+        slr = np.asarray(self.slr_values)
+        if slr.shape[0] != x.shape[0]:
+            n = min(slr.shape[0], x.shape[0])
+            slr = slr[:n]
+            x_slr = x[:n]
+        else:
+            x_slr = x
+        ax_slr.plot(x_slr, slr, '-o', color='tab:purple', markersize=4, linewidth=1.5, label='SLR')
+        ax_slr.set_ylabel('Sea Level\nRise')
+        ax_slr.tick_params(axis='x', which='both', bottom=True, top=False, labelbottom=False)
+        ax_slr.legend(loc='upper left')
+
         # Hide y-ticks on event axis
         ax_events.set_yticks([])
         ax_events.tick_params(axis='y', left=False, right=False, labelleft=False)
@@ -248,8 +260,7 @@ class ABMSimulator:
             ax.bar(x, damages, width=width, color='tab:orange', label='Actual Damage', zorder=2)
 
         ax.set_ylabel('Total Damage (USD)')
-        ax.set_xticks(x)
-        ax.set_xticklabels([])
+        # Share x with bottom axis; hide labels here
         ax.tick_params(axis='x', which='both', bottom=True, top=False, labelbottom=False)
         ax.legend()
 
@@ -279,11 +290,13 @@ class ABMSimulator:
             n_floodproofed = cumulative_floodproofed.sum(axis=0)
             ax_floodproof.bar(x, n_floodproofed, width=0.7, color='tab:green', label='Cumulative Floodproofed')
             ax_floodproof.set_ylabel('Floodproofed\nBuildings')
+            ax_floodproof.set_xlim(-0.5, len(times) - 0.5)
             ax_floodproof.set_xticks(x)
             ax_floodproof.set_xticklabels(times, rotation=45)
             ax_floodproof.legend()
         else:
             ax_floodproof.text(0.5, 0.5, 'No floodproofing data', ha='center', va='center')
+            ax_floodproof.set_xlim(-0.5, len(times) - 0.5)
             ax_floodproof.set_xticks(x)
             ax_floodproof.set_xticklabels(times, rotation=45)
             ax_floodproof.set_ylabel('Floodproofed\nBuildings\n(cumulative)')
@@ -296,7 +309,7 @@ class ABMSimulator:
         fig.tight_layout()
         plt.show()
         
-    def plot_total_damage_statistics(self, figsize=(12, 6)):
+    def plot_total_damage_statistics(self, percentiles=None, figsize=(12, 8)):
         """
         Plot total damages statistics as bar plots (stacked actual and avoided) over all sequences for:
         - Actual simulation (with floodproofing)
@@ -331,13 +344,6 @@ class ABMSimulator:
                 pmax = np.percentile(arr, percentiles[1], axis=0)
                 return pmin, pmax
 
-        # Prepare percentiles argument
-        percentiles = getattr(self, 'percentiles', None) if not hasattr(self, 'percentiles') else None
-        import inspect
-        frame = inspect.currentframe()
-        args, _, _, values = inspect.getargvalues(frame)
-        percentiles = values.get('percentiles', None)
-
         # Compute avoided damage
         if hasattr(self, 'baseline_damage_history') and self.baseline_damage_history is not None:
             if hasattr(self, 'floodproofed') and self.floodproofed is not None:
@@ -348,8 +354,25 @@ class ABMSimulator:
         else:
             avoided = np.zeros_like(sim_total)
 
-        # Create a single figure with two subplots (side by side)
-        fig, (ax, ax2) = plt.subplots(2, 1, figsize=figsize, sharex=True)
+        # Create a single figure with three subplots: SLR, damages, floodproofed
+        fig, (ax_slr, ax, ax2) = plt.subplots(
+            3, 1, figsize=figsize, sharex=True,
+            gridspec_kw={'height_ratios': [1, 4, 1.5]}
+        )
+
+        # --- Top plot: Sea Level Rise over time ---
+        x = np.arange(n_years)
+        slr = np.asarray(self.slr_values)
+        if slr.shape[0] != x.shape[0]:
+            n = min(slr.shape[0], x.shape[0])
+            slr = slr[:n]
+            x_slr = x[:n]
+        else:
+            x_slr = x
+        ax_slr.plot(x_slr, slr, '-o', color='tab:purple', markersize=4, linewidth=1.5, label='SLR')
+        ax_slr.set_ylabel('Sea Level\nRise')
+        ax_slr.tick_params(axis='x', which='both', bottom=True, top=False, labelbottom=False)
+        ax_slr.legend(loc='upper left')
 
         # --- Left plot: Damages ---
         if percentiles is None:
@@ -377,12 +400,11 @@ class ABMSimulator:
             avoided_pmax = base_pmax - sim_pmax
             avoided_pmax = np.clip(avoided_pmax, 0, None)
             ax.bar(x, avoided_pmax, width=width, bottom=sim_pmax, color='tab:blue', alpha=0.3, label=f'Avoided Damage (P{percentiles[1]})', zorder=1, hatch='\\', edgecolor='tab:blue')
-
-        ax.set_xlabel('Time')
+        
         ax.set_ylabel('Total Damage ($)')
         ax.set_title('Total Damages: Simulation vs Baseline')
-        ax.set_xticks(np.arange(n_years))
-        ax.set_xticklabels(times, rotation=45)
+        # Hide x labels here; bottom axis owns them
+        ax.tick_params(axis='x', which='both', bottom=True, top=False, labelbottom=False)
         ax.legend()
 
         # --- Right plot: Average number of floodproofed households per year ---
@@ -390,7 +412,6 @@ class ABMSimulator:
             avg_floodproofed = np.mean(self.floodproofed, axis=0)  # shape: [household, time]
             avg_floodproofed_per_year = avg_floodproofed.sum(axis=0)  # shape: [time]
             ax2.bar(np.arange(n_years), avg_floodproofed_per_year, width=width, color='tab:green', label='Avg. Floodproofed Households')
-            ax2.set_xlabel('Time')
             ax2.set_ylabel('Avg. Number of Floodproofed Households')
             ax2.set_title('Average Number of Floodproofed Households per Year')
             ax2.set_xticks(np.arange(n_years))
@@ -398,11 +419,13 @@ class ABMSimulator:
             ax2.legend()
         else:
             ax2.text(0.5, 0.5, 'No floodproofing data', ha='center', va='center')
-            ax2.set_xlabel('Time')
             ax2.set_ylabel('Avg. Number of Floodproofed Households')
             ax2.set_title('Average Number of Floodproofed Households per Year')
             ax2.set_xticks(np.arange(n_years))
             ax2.set_xticklabels(times, rotation=45)
+
+        # Bottom axis owns the x-axis label
+        ax2.set_xlabel('Time')
 
         fig.tight_layout()
         plt.show()
