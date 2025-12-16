@@ -1,9 +1,9 @@
 import numpy as np
-import xarray as xr
+import warnings
 
 class ABMSimulator:
 
-    def __init__(self, ds_impacts, times, slr_values, no_seq, damage_threshold=0.3, seed=42):
+    def __init__(self, ds_impacts, times, slr_values, no_seq, damage_threshold=0.3, seed=42, dmg_unit="$", slr_unit="feet"):
         self.ds_impacts = ds_impacts
         self.times = times
         self.dt = self.times[1] - self.times[0]
@@ -16,10 +16,33 @@ class ABMSimulator:
         self.strategies = ds_impacts.strategy.values
         self.event_names = ds_impacts.event.values
         self.max_pot_dmg = ds_impacts.object_id.attrs['max_pot_dmg']
+        self.dmg_unit = dmg_unit
+        self.slr_unit = slr_unit
         # Generate event sequences
-        self.sequences = self.create_event_sequences()
+        self.sequences = self.generate_event_sequences()
 
-    def create_event_sequences(self):
+    # =====================
+    # Public API
+    # =====================
+    def run_simulation(self, method='linear'):
+        """
+        Run the ABM simulation for all sequences and households using vectorized calculations.
+        Returns:
+            Sets attributes:
+            - self.damage_history: [sequence, household, year] array of damages (float)
+            - self.floodproofed: [sequence, household, year] boolean array of floodproofing state
+        """
+        self._compute_baseline_no_measures()
+        damage_history, floodproofed = self._simulate_damage_history(floodproofing=True, method=method)
+        self.damage_history = damage_history
+        self.floodproofed = floodproofed
+        self.has_run = True
+        print("Evaluation completed.")
+
+    # =====================
+    # Event sequences & interpolation utilities
+    # =====================
+    def generate_event_sequences(self):
         """
         Combines event probability calculation, event occurrence simulation, and sequence construction.
         Returns:
@@ -48,98 +71,89 @@ class ABMSimulator:
             sequences.append(sim_seq)
         return sequences
     
-    def slr_damage_lookup(self, slr_values, event_names_list, strategy, method='linear'):
+    def interpolate_damage_matrix(self, slr_values, event_names_list, strategy, method='linear'):
         """
-        Vectorized lookup/interpolation of damage for a given SLR value, event, and a list of strategies (one per object_id).
-        Returns an array of damages for each object_id.
+        Vectorized lookup/interpolation of damages across SLR values and events for a given strategy.
         Args:
-            slr_value: float, the SLR value to interpolate to
-            event: str, event name
+            slr_values: 1D array-like of SLR targets to interpolate to
+            event_names_list: list of event names to include
             strategy: str, strategy applied to all objects
-            method: interpolation method ('linear', 'nearest', etc.)
+            method: interpolation method ('linear', 'nearest', 'cubic', 'floor', 'ceil')
         Returns:
-            damages: np.ndarray of shape (n_households, n_events, n_slr_values)
+            damage_matrix: np.ndarray of shape (n_households, n_events, n_slr_values)
         """
-    
         slr_sim = self.ds_impacts['slr'].values
-        object_ids = self.ds_impacts['object_id'].values
-        damage_matrix = np.empty((len(object_ids), len(event_names_list), len(slr_values)))
+        n_objects = self.n_households
+        damage_matrix = np.empty((n_objects, len(event_names_list), len(slr_values)))
         for ievent, event in enumerate(event_names_list):
             damages_da = self.ds_impacts.sel(event=event).sel(strategy=strategy)["total_damage"]
             damages_values = damages_da.values  # shape (n_slr, n_obj)
-            damage_matrix[:,ievent,:] = self._interpolate_damages(slr_sim, damages_values, slr_values, method)
+            damage_matrix[:, ievent, :] = self._interpolate_damage_grid(slr_sim, damages_values, slr_values, method)
         return damage_matrix
+
+    # Backwards-compatible alias for older notebooks/code
+    def slr_damage_lookup(self, slr_values, event_names_list, strategy, method='linear'):
+        warnings.warn(
+            "ABMSimulator.slr_damage_lookup() is deprecated. Use interpolate_damage_matrix() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.interpolate_damage_matrix(slr_values, event_names_list, strategy, method)
 
 
     @staticmethod
-    def _interpolate_damages(slr_sim, damages_values, slr_values, method):
+    def _interpolate_damage_grid(slr_sim, damages_values, slr_values, method):
         """
-        Interpolate damages for all objects at once.
-        slr_sim: 1D array of simulated SLR values from the impact matrix created in step 1 
-        damages_values: 2D array (n_obj, n_slr), using slr from impact matrix
-        slr_values: 1D array (n_slr_va;lues,) of SLR values to interpolate to
-        method: str, interpolation method
-        Returns: 1D array (n_obj,)
+        Interpolate damages for all objects at once across target SLR values.
+        Args:
+            slr_sim: 1D array of simulated SLR values (from the lookup table)
+            damages_values: 2D array (n_obj, n_slr_sim), aligned with slr_sim
+            slr_values: 1D array (n_targets,) of SLR values to interpolate to
+            method: interpolation method ('linear', 'nearest', 'cubic', 'floor', 'ceil')
+        Returns:
+            np.ndarray of shape (n_obj, n_targets)
         """
-        import numpy as np
         from scipy.interpolate import interp1d
-        # damages_matrix shape: (n_obj, n_slr)
+
+        slr_values = np.asarray(slr_values)
         if method == 'linear':
             f = interp1d(slr_sim, damages_values, kind='linear', axis=1, bounds_error=False, fill_value='extrapolate')
-            damages = f(slr_values)
-            return damages
+            return f(slr_values)
         elif method == 'nearest':
-            idx = (np.abs(slr_sim - slr_values)).argmin()
-            return damages_values[:, idx]
+            indices = [int(np.abs(slr_sim - v).argmin()) for v in slr_values]
+            return np.stack([damages_values[:, idx] for idx in indices], axis=1)
         elif method == 'cubic':
             if len(slr_sim) < 4:
                 raise ValueError('Cubic interpolation requires at least 4 SLR points.')
             f = interp1d(slr_sim, damages_values, kind='cubic', axis=1, bounds_error=False, fill_value='extrapolate')
-            damages = f(slr_values)
-            return damages
+            return f(slr_values)
         elif method == 'floor':
-            slr_sim_sorted = np.sort(slr_sim)
             sort_idx = np.argsort(slr_sim)
-            idxs = np.where(slr_sim_sorted <= slr_values)[0]
-            if len(idxs) == 0:
-                idx = 0
-            else:
-                idx = idxs[-1]
-            return damages_values[:, sort_idx[idx]]
+            slr_sorted = slr_sim[sort_idx]
+            idxs = [np.searchsorted(slr_sorted, v, side='right') - 1 for v in slr_values]
+            idxs = [0 if i < 0 else i for i in idxs]
+            return np.stack([damages_values[:, sort_idx[i]] for i in idxs], axis=1)
         elif method == 'ceil':
-            slr_sim_sorted = np.sort(slr_sim)
             sort_idx = np.argsort(slr_sim)
-            idxs = np.where(slr_sim_sorted >= slr_values)[0]
-            if len(idxs) == 0:
-                idx = -1
-            else:
-                idx = idxs[0]
-            return damages_values[:, sort_idx[idx]]
+            slr_sorted = slr_sim[sort_idx]
+            idxs = [np.searchsorted(slr_sorted, v, side='left') for v in slr_values]
+            idxs = [min(i, len(slr_sorted) - 1) for i in idxs]
+            return np.stack([damages_values[:, sort_idx[i]] for i in idxs], axis=1)
         else:
             raise ValueError(f'Unknown interpolation method: {method}')
 
-    def run(self, method='linear'):
-        """
-        Run the ABM simulation for all sequences and households using vectorized calculations.
-        Returns:
-            damage_history: [sequence, household, year] array of damages
-            floodproofed: [sequence, household, year] boolean array of floodproofing state
-        """
-        self._compute_baseline_no_floodproofing()
-        damage_history, floodproofed = self._calculate_damage_history(floodproofing=True, method=method)
-        self.damage_history = damage_history
-        self.floodproofed = floodproofed
-        self.has_run = True
-        print("Evaluation completed.") 
+    # =====================
+    # Plotting helpers
+    # =====================
 
-    def _compute_baseline_no_floodproofing(self):
+    def _compute_baseline_no_measures(self):
         """
         Compute and store baseline damages for all sequences,
         assuming 'no_measures' strategy for all households and all years (no floodproofing).
         Stores:
-            self.baseline_damage_history: [sequence, household, year] array of damages
+            self.baseline_damage_history: [sequence, household, year] array of damages (float)
         """
-        baseline_damage_history, _ = self._calculate_damage_history(floodproofing=False, method='linear')
+        baseline_damage_history, _ = self._simulate_damage_history(floodproofing=False, method='linear')
         self.baseline_damage_history = baseline_damage_history
            
     def plot_event_damage_timeseries(self, seq_id, figsize=(12, 10)):
@@ -153,7 +167,6 @@ class ABMSimulator:
         """
         import matplotlib.pyplot as plt
         from matplotlib import cm
-        import numpy as np
         import matplotlib.colors as mcolors
 
         # Check if simulation has been run
@@ -237,7 +250,7 @@ class ABMSimulator:
         else:
             x_slr = x
         ax_slr.plot(x_slr, slr, '-o', color='tab:purple', markersize=4, linewidth=1.5, label='SLR')
-        ax_slr.set_ylabel('Sea Level\nRise')
+        ax_slr.set_ylabel(f'Sea Level\nRise ({self.slr_unit})')
         ax_slr.tick_params(axis='x', which='both', bottom=True, top=False, labelbottom=False)
         ax_slr.legend(loc='upper left')
 
@@ -259,7 +272,7 @@ class ABMSimulator:
         else:
             ax.bar(x, damages, width=width, color='tab:orange', label='Actual Damage', zorder=2)
 
-        ax.set_ylabel('Total Damage (USD)')
+        ax.set_ylabel(f'Total Damage ({self.dmg_unit})')
         # Share x with bottom axis; hide labels here
         ax.tick_params(axis='x', which='both', bottom=True, top=False, labelbottom=False)
         ax.legend()
@@ -370,14 +383,13 @@ class ABMSimulator:
         else:
             x_slr = x
         ax_slr.plot(x_slr, slr, '-o', color='tab:purple', markersize=4, linewidth=1.5, label='SLR')
-        ax_slr.set_ylabel('Sea Level\nRise')
+        ax_slr.set_ylabel(f'Sea Level\nRise ({self.slr_unit})')
         ax_slr.tick_params(axis='x', which='both', bottom=True, top=False, labelbottom=False)
         ax_slr.legend(loc='upper left')
 
         # --- Left plot: Damages ---
         if percentiles is None:
             sim_bar = get_bar_data(sim_total, None)
-            base_bar = get_bar_data(base_total, None)
             avoided_bar = get_bar_data(avoided, None)
             x = np.arange(n_years)
             # Actual damage
@@ -401,7 +413,7 @@ class ABMSimulator:
             avoided_pmax = np.clip(avoided_pmax, 0, None)
             ax.bar(x, avoided_pmax, width=width, bottom=sim_pmax, color='tab:blue', alpha=0.3, label=f'Avoided Damage (P{percentiles[1]})', zorder=1, hatch='\\', edgecolor='tab:blue')
         
-        ax.set_ylabel('Total Damage ($)')
+        ax.set_ylabel(f'Total Damage ({self.dmg_unit})')
         ax.set_title('Total Damages: Simulation vs Baseline')
         # Hide x labels here; bottom axis owns them
         ax.tick_params(axis='x', which='both', bottom=True, top=False, labelbottom=False)
@@ -429,23 +441,26 @@ class ABMSimulator:
 
         fig.tight_layout()
         plt.show()
-        
-    def _calculate_damage_history(self, floodproofing: bool, method: str = 'linear'):
+    
+    # =====================
+    # Core simulation logic
+    # =====================
+    def _simulate_damage_history(self, floodproofing: bool, method: str = 'linear'):
         """
         Shared logic for calculating damage history.
         If floodproofing is True, applies floodproofing logic; otherwise, always uses 'no_measures'.
         Returns:
-            damage_history: [sequence, household, time] array
+            damage_history: [sequence, household, time] array (float)
             floodproofed: [sequence, household, time] boolean array (None if floodproofing is False)
         """
         event_names_list = list(self.event_names)
-        damage_history = np.zeros((self.no_seq, self.n_households, self.time_steps), dtype=np.int64)
+        damage_history = np.zeros((self.no_seq, self.n_households, self.time_steps), dtype=np.float64)
         floodproofed = np.zeros((self.no_seq, self.n_households, self.time_steps), dtype=bool) if floodproofing else None
 
         # full matrix lookups for no measures and floodproofing all (n_objects, n_events, n_slr_values)
-        damage_matrix_no_measures = self.slr_damage_lookup(self.slr_values, event_names_list, 'no_measures', method=method)
+        damage_matrix_no_measures = self.interpolate_damage_matrix(self.slr_values, event_names_list, 'no_measures', method=method)
         if floodproofing:
-            damage_matrix_floodproofing_all = self.slr_damage_lookup(self.slr_values, event_names_list, 'floodproof_all_0', method=method)
+            damage_matrix_floodproofing_all = self.interpolate_damage_matrix(self.slr_values, event_names_list, 'floodproof_all_0', method=method)
 
         for seq_idx in range(self.no_seq):
             is_last = (seq_idx == self.no_seq - 1)
