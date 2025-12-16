@@ -147,7 +147,7 @@ class ABMSimulator:
         self.baseline_damage_history = baseline_damage_history
         self.baseline_damage_history_per_event = baseline_damage_history_per_event
            
-    def plot_event_damage_timeseries(self, seq_id, figsize=(12, 6)):
+    def plot_event_damage_timeseries(self, seq_id, figsize=(12, 10)):
         """
         Plots a time series for a given sequence id, showing:
         - For each time step (year), a stacked column of dots for each event that occurred (stacked from bottom)
@@ -159,6 +159,7 @@ class ABMSimulator:
         import matplotlib.pyplot as plt
         from matplotlib import cm
         import numpy as np
+        import matplotlib.colors as mcolors
 
         # Check if simulation has been run
         if not hasattr(self, 'has_run') or not getattr(self, 'has_run', False):
@@ -175,76 +176,235 @@ class ABMSimulator:
 
         # Use calculated damages from simulation (sum over households for each year)
         damages = self.damage_history[seq_id].sum(axis=0)
+        # Baseline damages for this sequence (sum over households for each year)
+        if hasattr(self, 'baseline_damage_history'):
+            baseline_damages = self.baseline_damage_history[seq_id].sum(axis=0)
+        else:
+            baseline_damages = None
 
-        # Prepare event color mapping
+        # Prepare event frequency mapping (use log scale for color)
+        # Get all unique events in this sequence
         unique_events = list({e for events in seq for e in events})
-        cmap = cm.get_cmap('tab20', len(unique_events))
-        event2color = {e: cmap(i) for i, e in enumerate(unique_events)}
+        # Get event frequencies from ds_impacts.event.attrs['freq']
+        event_freq_dict = {}
+        if hasattr(self.ds_impacts, 'event') and hasattr(self.ds_impacts.event, 'values') and hasattr(self.ds_impacts.event, 'attrs'):
+            all_events = self.ds_impacts.event.values
+            all_freqs = self.ds_impacts.event.attrs.get('freq', None)
+            if all_freqs is not None:
+                for e, f in zip(all_events, all_freqs):
+                    event_freq_dict[e] = f
+        # For events not in ds_impacts, assign a small frequency
+        min_freq = min(event_freq_dict.values()) if event_freq_dict else 1e-6
+        event_freqs = [event_freq_dict.get(e, min_freq) for e in unique_events]
 
-        fig, ax1 = plt.subplots(figsize=figsize)
+        # Log scale for color mapping, but colorbar ticks show actual frequencies
+        cmap = cm.get_cmap('plasma_r')
+        log_freqs = np.log10(event_freqs)
+        # Use a consistent normalization for the color mapping
+        min_logf = np.min(log_freqs)
+        max_logf = np.max(log_freqs)
+        norm = mcolors.Normalize(vmin=min_logf, vmax=max_logf)
+        event2color = {e: cmap(norm(np.log10(event_freq_dict.get(e, min_freq)))) for e in unique_events}
 
-        # Plot stacked dots for events
+        import matplotlib.gridspec as gridspec
+        fig = plt.figure(figsize=figsize)
+        # 4 rows: colorbar, events, damages, floodproofed; 1 column
+        gs = gridspec.GridSpec(4, 1, height_ratios=[0.5, 1, 4, 1.5], hspace=0.15)
+        cax = fig.add_subplot(gs[0])
+        ax_events = fig.add_subplot(gs[1], sharex=None)
+        ax = fig.add_subplot(gs[2], sharex=ax_events)
+        ax_floodproof = fig.add_subplot(gs[3], sharex=ax_events)
+
+        # Plot event dots in the top axis (stacked vertically for same time step, no spacing)
         for t, events in enumerate(seq):
+            n_events = len(events)
+            if n_events == 0:
+                continue
             for i, event in enumerate(events):
                 color = event2color[event]
-                ax1.scatter(t, i, color=color, s=60, marker='o', edgecolor='k', zorder=3)
+                ax_events.scatter(t, i, color=color, s=60, marker='o', edgecolor='k', zorder=3)
 
-        # Set y-limits for event stack
+        # Set y-ticks for event axis to show up to max number of events
         max_stack = max(len(events) for events in seq)
-        ax1.set_ylim(-0.5, max_stack + 0.5)
-        ax1.set_ylabel('Events (stacked dots)')
-        ax1.set_xticks(np.arange(len(times)))
-        ax1.set_xticklabels(times, rotation=45)
+        ax_events.set_ylim(-0.5, max_stack - 0.5 if max_stack > 0 else 0.5)
+        ax_events.set_ylabel('Events')
+        ax_events.set_xlim(-0.5, len(times) - 0.5)
+        # Set x-ticks (but not labels) on all axes except bottom
+        x = np.arange(len(times))
+        ax_events.set_xticks(x)
+        ax_events.set_xticklabels([])
+        ax_events.tick_params(axis='x', which='both', bottom=True, top=False, labelbottom=False)
+        # Hide y-ticks on event axis
+        ax_events.set_yticks([])
+        ax_events.tick_params(axis='y', left=False, right=False, labelleft=False)
+        # Draw a box around the plot
+        for spine in ax_events.spines.values():
+            spine.set_visible(True)
 
-        # Twin axis for damage bar plot
-        ax2 = ax1.twinx()
-        ax2.bar(np.arange(len(times)), damages, alpha=0.3, color='red', width=0.7, zorder=2)
-        ax2.set_ylabel('Total Damage')
+        # Plot stacked bar for damages in the bottom axis
+        x = np.arange(len(times))
+        width = 0.7
+        if baseline_damages is not None:
+            avoided = baseline_damages - damages
+            avoided = np.clip(avoided, 0, None)
+            ax.bar(x, damages, width=width, color='tab:orange', label='Actual Damage', zorder=2)
+            ax.bar(x, avoided, width=width, bottom=damages, color='tab:blue', label='Avoided Damage (Baseline - Actual)', zorder=1)
+        else:
+            ax.bar(x, damages, width=width, color='tab:orange', label='Actual Damage', zorder=2)
 
-        # Legend for events
-        handles = [plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=event2color[e], markeredgecolor='k', label=str(e), markersize=8) for e in unique_events]
-        ax1.legend(handles=handles, title='Event', bbox_to_anchor=(1.05, 1), loc='upper left')
+        ax.set_ylabel('Total Damage (USD)')
+        ax.set_xticks(x)
+        ax.set_xticklabels([])
+        ax.tick_params(axis='x', which='both', bottom=True, top=False, labelbottom=False)
+        ax.legend()
 
-        ax1.set_title(f'Time Series of Events and Damages (Sequence {seq_id})')
+        # Add horizontal colorbar for event frequency above the event plot
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        freq_ticks = np.unique(event_freqs)
+        min_tick = np.min(freq_ticks)
+        max_tick = np.max(freq_ticks)
+        n_ticks = 6 if len(freq_ticks) < 6 else len(freq_ticks)
+        all_ticks = np.logspace(np.log10(min_tick), np.log10(max_tick), n_ticks)
+        cbar = plt.colorbar(sm, cax=cax, orientation='horizontal')
+        cbar.set_ticks(np.log10(all_ticks))
+        cbar.set_ticklabels([f"{f:.2e}" for f in all_ticks])
+        cbar.set_label('Event Frequency', labelpad=8)
+        cbar.ax.set_title('Event Frequency', fontsize=10, pad=10)
+        # Make colorbar about 1/3 width of the figure
+        cax.set_position([0.33, cax.get_position().y0, 0.33, cax.get_position().height])
+
+        # Plot cumulative number of floodproofed buildings in the bottom axis
+        if hasattr(self, 'floodproofed') and self.floodproofed is not None:
+            # self.floodproofed shape: [sequence, household, time]
+            floodproofed_seq = self.floodproofed[seq_id]  # shape: [household, time]
+            # Cumulative number of unique buildings floodproofed up to each time
+            # A building is floodproofed if it is True at any time up to t
+            cumulative_floodproofed = np.cumsum(floodproofed_seq, axis=1) > 0
+            n_floodproofed = cumulative_floodproofed.sum(axis=0)
+            ax_floodproof.bar(x, n_floodproofed, width=0.7, color='tab:green', label='Cumulative Floodproofed')
+            ax_floodproof.set_ylabel('Floodproofed\nBuildings')
+            ax_floodproof.set_xticks(x)
+            ax_floodproof.set_xticklabels(times, rotation=45)
+            ax_floodproof.legend()
+        else:
+            ax_floodproof.text(0.5, 0.5, 'No floodproofing data', ha='center', va='center')
+            ax_floodproof.set_xticks(x)
+            ax_floodproof.set_xticklabels(times, rotation=45)
+            ax_floodproof.set_ylabel('Floodproofed\nBuildings\n(cumulative)')
+
+        # Make colorbar height smaller
+        # Set colorbar axis height to 0.15 of figure height (smaller than default)
+        pos = cax.get_position()
+        cax.set_position([pos.x0, pos.y0, pos.width, pos.height * 0.5])
+
         fig.tight_layout()
         plt.show()
         
     def plot_total_damage_statistics(self, figsize=(12, 6)):
         """
-        Plot total damages statistics (mean and 5-95 percentile) over all sequences for:
+        Plot total damages statistics as bar plots (stacked actual and avoided) over all sequences for:
         - Actual simulation (with floodproofing)
         - Baseline (no floodproofing)
-        Shows average line and hatched area for 5-95 percentile for both scenarios.
+        Optionally, if percentiles=(min, max) is given, plot bars for those percentiles instead of mean.
+        Plots a single figure with two subplots: (1) damages, (2) average number of floodproofed households per year.
+        Args:
+            figsize: tuple, figure size for the plots
+            percentiles: tuple (min, max) or None, percentiles to plot (e.g., (5, 95)). If None, plot mean.
         """
         import matplotlib.pyplot as plt
-        import numpy as np
 
         times = np.array(self.times)
+        n_years = len(times)
+        width = 0.7
+
         # Aggregate over households (sum damages per year per sequence)
         sim_total = self.damage_history.sum(axis=1)  # shape: (n_seq, years)
         base_total = self.baseline_damage_history.sum(axis=1)  # shape: (n_seq, years)
 
-        def stats(arr):
-            mean = np.mean(arr, axis=0)
-            p5 = np.percentile(arr, 5, axis=0)
-            p95 = np.percentile(arr, 95, axis=0)
-            return mean, p5, p95
+        # Compute mean or percentiles for damages
+        def get_bar_data(arr, percentiles=None):
+            if percentiles is None:
+                mean = np.mean(arr, axis=0)
+                return mean
+            else:
+                pmin = np.percentile(arr, percentiles[0], axis=0)
+                pmax = np.percentile(arr, percentiles[1], axis=0)
+                return pmin, pmax
 
-        sim_mean, sim_p5, sim_p95 = stats(sim_total)
-        base_mean, base_p5, base_p95 = stats(base_total)
+        # Prepare percentiles argument
+        percentiles = getattr(self, 'percentiles', None) if not hasattr(self, 'percentiles') else None
+        import inspect
+        frame = inspect.currentframe()
+        args, _, _, values = inspect.getargvalues(frame)
+        percentiles = values.get('percentiles', None)
 
-        fig, ax = plt.subplots(figsize=figsize)
-        # Baseline (no floodproofing)
-        ax.plot(times, base_mean, label='Baseline (no floodproofing)', color='tab:blue')
-        ax.fill_between(times, base_p5, base_p95, color='tab:blue', alpha=0.2, hatch='//', edgecolor='tab:blue', linewidth=0.0)
-        # Actual simulation
-        ax.plot(times, sim_mean, label='Simulation (with floodproofing)', color='tab:orange')
-        ax.fill_between(times, sim_p5, sim_p95, color='tab:orange', alpha=0.2, hatch='\\', edgecolor='tab:orange', linewidth=0.0)
+        # Compute avoided damage
+        if hasattr(self, 'baseline_damage_history') and self.baseline_damage_history is not None:
+            if hasattr(self, 'floodproofed') and self.floodproofed is not None:
+                avoided = base_total - sim_total
+                avoided = np.clip(avoided, 0, None)
+            else:
+                avoided = np.zeros_like(sim_total)
+        else:
+            avoided = np.zeros_like(sim_total)
+
+        # Create a single figure with two subplots (side by side)
+        fig, (ax, ax2) = plt.subplots(2, 1, figsize=figsize, sharex=True)
+
+        # --- Left plot: Damages ---
+        if percentiles is None:
+            sim_bar = get_bar_data(sim_total, None)
+            base_bar = get_bar_data(base_total, None)
+            avoided_bar = get_bar_data(avoided, None)
+            x = np.arange(n_years)
+            # Actual damage
+            ax.bar(x, sim_bar, width=width, color='tab:orange', label='Actual Damage', zorder=2)
+            # Avoided damage (stacked)
+            ax.bar(x, avoided_bar, width=width, bottom=sim_bar, color='tab:blue', label='Avoided Damage (Baseline - Actual)', zorder=1)
+        else:
+            sim_pmin, sim_pmax = get_bar_data(sim_total, percentiles)
+            base_pmin, base_pmax = get_bar_data(base_total, percentiles)
+            avoided_pmin = base_pmin - sim_pmin
+            avoided_pmin = np.clip(avoided_pmin, 0, None)
+            x = np.arange(n_years)
+            # Actual damage (lower percentile)
+            ax.bar(x, sim_pmin, width=width, color='tab:orange', alpha=0.7, label=f'Actual Damage (P{percentiles[0]})', zorder=2)
+            # Avoided damage (lower percentile, stacked)
+            ax.bar(x, avoided_pmin, width=width, bottom=sim_pmin, color='tab:blue', alpha=0.7, label=f'Avoided Damage (P{percentiles[0]})', zorder=1)
+            # Actual damage (upper percentile, hatched)
+            ax.bar(x, sim_pmax, width=width, color='tab:orange', alpha=0.3, label=f'Actual Damage (P{percentiles[1]})', zorder=2, hatch='//', edgecolor='tab:orange')
+            # Avoided damage (upper percentile, hatched, stacked)
+            avoided_pmax = base_pmax - sim_pmax
+            avoided_pmax = np.clip(avoided_pmax, 0, None)
+            ax.bar(x, avoided_pmax, width=width, bottom=sim_pmax, color='tab:blue', alpha=0.3, label=f'Avoided Damage (P{percentiles[1]})', zorder=1, hatch='\\', edgecolor='tab:blue')
 
         ax.set_xlabel('Time')
-        ax.set_ylabel('Total Damage')
+        ax.set_ylabel('Total Damage ($)')
         ax.set_title('Total Damages: Simulation vs Baseline')
+        ax.set_xticks(np.arange(n_years))
+        ax.set_xticklabels(times, rotation=45)
         ax.legend()
+
+        # --- Right plot: Average number of floodproofed households per year ---
+        if hasattr(self, 'floodproofed') and self.floodproofed is not None:
+            avg_floodproofed = np.mean(self.floodproofed, axis=0)  # shape: [household, time]
+            avg_floodproofed_per_year = avg_floodproofed.sum(axis=0)  # shape: [time]
+            ax2.bar(np.arange(n_years), avg_floodproofed_per_year, width=width, color='tab:green', label='Avg. Floodproofed Households')
+            ax2.set_xlabel('Time')
+            ax2.set_ylabel('Avg. Number of Floodproofed Households')
+            ax2.set_title('Average Number of Floodproofed Households per Year')
+            ax2.set_xticks(np.arange(n_years))
+            ax2.set_xticklabels(times, rotation=45)
+            ax2.legend()
+        else:
+            ax2.text(0.5, 0.5, 'No floodproofing data', ha='center', va='center')
+            ax2.set_xlabel('Time')
+            ax2.set_ylabel('Avg. Number of Floodproofed Households')
+            ax2.set_title('Average Number of Floodproofed Households per Year')
+            ax2.set_xticks(np.arange(n_years))
+            ax2.set_xticklabels(times, rotation=45)
+
         fig.tight_layout()
         plt.show()
         
@@ -307,4 +467,5 @@ class ABMSimulator:
                     valid = not_floodproofed & with_pot_dmg
                     threshold_exceeded[valid] = (total_damage[valid] / self.max_pot_dmg[valid]) > self.damage_threshold
                     is_floodproofed = is_floodproofed | threshold_exceeded
+                    
         return damage_history, damage_history_per_event, floodproofed
