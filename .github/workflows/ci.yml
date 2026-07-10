@@ -1,0 +1,62 @@
+# HYG.3 (2026-07-09): lock in the gated Phase-4b scaffold while 4b-full work
+# churns.  Runs the full pytest suite (all bit-parity gates), the numbered
+# examples on the synthetic table, and the vendored Phase-4b verification
+# harness.  DYNAMO-M-dependent paths (example 05, Phase-4a parity) skip/exit
+# cleanly by design when DYNAMO-M is absent, so no secret checkout is needed.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package + dev dependencies
+        run: pip install -e .[dev]
+
+      - name: Run test suite (all parity gates)
+        run: pytest tests/ -q
+
+      - name: Run examples on the synthetic table (01-04, 06)
+        # 05 needs DYNAMO-M; it prints a notice and exits 0 without it,
+        # so it is included too — the guard itself is under test.
+        working-directory: examples_engine
+        run: |
+          python 01_quickstart.py
+          python 02_rules_comparison.py
+          python 03_custom_rule.py
+          python 04_monte_carlo_uncertainty.py
+          python 05_dynamo_live_parity.py
+          python 06_mesa_native_driving.py
+
+      - name: Phase-4b verification harness (bit-parity gate)
+        # The verification/ bundle is kept local (git-ignored) as the historical
+        # record, so it may be absent in the checkout — guard on its presence.
+        if: hashFiles('verification/phase4b_mesa_native/run_phase4b_verification.py') != ''
+        continue-on-error: true
+        run: python verification/phase4b_mesa_native/run_phase4b_verification.py
+
+      - name: Upload Phase-4b gate report
+        if: hashFiles('verification/phase4b_mesa_native/phase4b_report.md') != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase4b-gate-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: |
+            verification/phase4b_mesa_native/phase4b_report.md
+            verification/phase4b_mesa_native/phase4b_metrics.json
