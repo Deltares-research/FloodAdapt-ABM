@@ -32,9 +32,9 @@ jobs:
       - name: Run test suite (all parity gates)
         run: pytest tests/ -q
 
-      - name: Run examples on the synthetic table (01-04, 06)
-        # 05 needs DYNAMO-M; it prints a notice and exits 0 without it,
-        # so it is included too — the guard itself is under test.
+      - name: Run examples on the synthetic table (01-04, 06, 07)
+        # 05 and 07 need DYNAMO-M; they print a notice and exit 0 without it,
+        # so they are included too — the guard itself is under test.
         working-directory: examples_engine
         run: |
           python 01_quickstart.py
@@ -43,20 +43,4 @@ jobs:
           python 04_monte_carlo_uncertainty.py
           python 05_dynamo_live_parity.py
           python 06_mesa_native_driving.py
-
-      - name: Phase-4b verification harness (bit-parity gate)
-        # The verification/ bundle is kept local (git-ignored) as the historical
-        # record, so it may be absent in the checkout — guard on its presence.
-        if: hashFiles('verification/phase4b_mesa_native/run_phase4b_verification.py') != ''
-        continue-on-error: true
-        run: python verification/phase4b_mesa_native/run_phase4b_verification.py
-
-      - name: Upload Phase-4b gate report
-        if: hashFiles('verification/phase4b_mesa_native/phase4b_report.md') != ''
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: phase4b-gate-${{ matrix.os }}-py${{ matrix.python-version }}
-          path: |
-            verification/phase4b_mesa_native/phase4b_report.md
-            verification/phase4b_mesa_native/phase4b_metrics.json
+          python 07_mesa_native_full.py
