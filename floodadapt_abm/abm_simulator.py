@@ -1,9 +1,44 @@
+"""
+abm_simulator.py
+================
+.. deprecated:: Phase 3
+    ``ABMSimulator`` is the **legacy** pre-refactor threshold-rule simulator.
+    It is superseded by :class:`floodadapt_abm.simulation_engine.SimulationEngine`
+    with a pluggable :class:`~floodadapt_abm.decision_rule.DecisionRule`
+    (use ``ThresholdRule`` to reproduce this class's 0.3-threshold behaviour, or
+    ``SEURule`` for the DYNAMO-M science).
+
+    It is intentionally **kept importable** (not moved into ``_core/``) because it
+    is still a public/legacy API actively referenced by:
+
+    * ``notebooks/archive/2_simulate_adaptation.ipynb`` (the legacy stage-2 notebook), and
+    * the Gate-1 regression test, which asserts that ``ThresholdRule`` reproduces
+      this class's damage/adaptation formula bit-for-bit.
+
+    New code should use ``SimulationEngine``.  See the numbered examples in
+    ``examples_engine/`` (start with ``01_quickstart.py``).
+"""
 import numpy as np
 import warnings
 
+from floodadapt_abm._core.lookup_utils import (
+    interpolate_damage_matrix as _lu_interpolate_damage_matrix,
+)
+
+
 class ABMSimulator:
+    """Legacy threshold-rule ABM simulator (deprecated; see module docstring)."""
 
     def __init__(self, ds_impacts, times, slr_values, no_seq, damage_threshold=0.3, seed=42, dmg_unit="$", slr_unit="feet", damage_dtype=np.int32):
+        warnings.warn(
+            "ABMSimulator is deprecated and retained only for backward "
+            "compatibility (legacy notebook + Gate-1 regression test). Use "
+            "floodadapt_abm.SimulationEngine with a DecisionRule "
+            "(ThresholdRule reproduces the 0.3-threshold behaviour; SEURule for "
+            "the DYNAMO-M SEU science).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.ds_impacts = ds_impacts
         self.times = times
         self.dt = self.times[1] - self.times[0]
@@ -76,23 +111,31 @@ class ABMSimulator:
     def interpolate_damage_matrix(self, slr_values, event_names_list, strategy, method='linear'):
         """
         Vectorized lookup/interpolation of damages across SLR values and events for a given strategy.
-        Args:
-            slr_values: 1D array-like of SLR targets to interpolate to
-            event_names_list: list of event names to include
-            strategy: str, strategy applied to all objects
-            method: interpolation method ('linear', 'nearest', 'cubic', 'floor', 'ceil')
-        Returns:
-            damage_matrix: np.ndarray of shape (n_households, n_events, n_slr_values)
+
+        Parameters
+        ----------
+        slr_values : array-like
+            1-D sequence of SLR targets to interpolate to.
+        event_names_list : list of str
+            Ordered list of event names to include in the output.
+        strategy : str
+            Strategy name applied to all objects.
+        method : str
+            Interpolation method: 'linear', 'nearest', 'cubic', 'floor', 'ceil'.
+
+        Returns
+        -------
+        np.ndarray
+            Shape (n_households, n_events, n_slr_values), dtype float32.
         """
         print(f"[LOOKUP] Interpolating damage matrix for strategy '{strategy}' using method '{method}'...")
-        slr_sim = self.ds_impacts['slr'].values
-        n_objects = self.n_households
-        damage_matrix = np.empty((n_objects, len(event_names_list), len(slr_values)))
-        for ievent, event in enumerate(event_names_list):
-            damages_da = self.ds_impacts.sel(event=event).sel(strategy=strategy)["total_damage"]
-            damages_values = damages_da.values  # shape (n_slr, n_obj)
-            damage_matrix[:, ievent, :] = self._interpolate_damage_grid(slr_sim, damages_values, slr_values, method)
-        return damage_matrix
+        return _lu_interpolate_damage_matrix(
+            ds=self.ds_impacts,
+            strategy=strategy,
+            slr_values=slr_values,
+            event_names_list=event_names_list,
+            method=method,
+        )
 
     # Backwards-compatible alias for older notebooks/code
     def slr_damage_lookup(self, slr_values, event_names_list, strategy, method='linear'):
@@ -107,43 +150,49 @@ class ABMSimulator:
     @staticmethod
     def _interpolate_damage_grid(slr_sim, damages_values, slr_values, method):
         """
-        Interpolate damages for all objects at once across target SLR values.
-        Args:
-            slr_sim: 1D array of simulated SLR values (from the lookup table)
-            damages_values: 2D array (n_obj, n_slr_sim), aligned with slr_sim
-            slr_values: 1D array (n_targets,) of SLR values to interpolate to
-            method: interpolation method ('linear', 'nearest', 'cubic', 'floor', 'ceil')
-        Returns:
-            np.ndarray of shape (n_obj, n_targets)
+        .. deprecated::
+            Internal implementation detail delegated to
+            :func:`floodadapt_abm.lookup_utils.interpolate_damage_at_slr`.
+            Kept for backwards compatibility only; do not add new call sites.
         """
+        import xarray as xr
+        warnings.warn(
+            "ABMSimulator._interpolate_damage_grid is deprecated. "
+            "Use lookup_utils.interpolate_damage_matrix instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        # Build a minimal Dataset wrapping the raw array so we can reuse lookup_utils
         from scipy.interpolate import interp1d
-
-        slr_values = np.asarray(slr_values)
+        slr_values_arr = np.asarray(slr_values)
         if method == 'linear':
-            f = interp1d(slr_sim, damages_values, kind='linear', axis=1, bounds_error=False, fill_value='extrapolate')
-            return f(slr_values)
+            f = interp1d(slr_sim, damages_values, kind='linear', axis=1,
+                         bounds_error=False, fill_value='extrapolate')
+            return f(slr_values_arr)
         elif method == 'nearest':
-            indices = [int(np.abs(slr_sim - v).argmin()) for v in slr_values]
+            indices = [int(np.abs(slr_sim - v).argmin()) for v in slr_values_arr]
             return np.stack([damages_values[:, idx] for idx in indices], axis=1)
         elif method == 'cubic':
             if len(slr_sim) < 4:
                 raise ValueError('Cubic interpolation requires at least 4 SLR points.')
-            f = interp1d(slr_sim, damages_values, kind='cubic', axis=1, bounds_error=False, fill_value='extrapolate')
-            return f(slr_values)
+            f = interp1d(slr_sim, damages_values, kind='cubic', axis=1,
+                         bounds_error=False, fill_value='extrapolate')
+            return f(slr_values_arr)
         elif method == 'floor':
             sort_idx = np.argsort(slr_sim)
             slr_sorted = slr_sim[sort_idx]
-            idxs = [np.searchsorted(slr_sorted, v, side='right') - 1 for v in slr_values]
+            idxs = [np.searchsorted(slr_sorted, v, side='right') - 1 for v in slr_values_arr]
             idxs = [0 if i < 0 else i for i in idxs]
             return np.stack([damages_values[:, sort_idx[i]] for i in idxs], axis=1)
         elif method == 'ceil':
             sort_idx = np.argsort(slr_sim)
             slr_sorted = slr_sim[sort_idx]
-            idxs = [np.searchsorted(slr_sorted, v, side='left') for v in slr_values]
+            idxs = [np.searchsorted(slr_sorted, v, side='left') for v in slr_values_arr]
             idxs = [min(i, len(slr_sorted) - 1) for i in idxs]
             return np.stack([damages_values[:, sort_idx[i]] for i in idxs], axis=1)
         else:
             raise ValueError(f'Unknown interpolation method: {method}')
+
 
     # =====================
     # Plotting helpers

@@ -207,14 +207,27 @@ def read_impacts_dataset(fa, projections, strategies, events, slr, events_freq=N
     ds_impacts.coords['object_id'].attrs['primary_object_type'] = gdf_temp["Primary Object Type"].astype(str).to_list()
 
     
+    object_id_order = gdf_temp["Object ID"].values
+
     for strat in strategies:
         for proj in projections:
             for event_name in events:
                 scen_name = f"{proj.name}_{event_name}_{strat.name}"
                 gdf_impacts = fa.get_building_footprint_impacts(scen_name)
-                # TODO add api method to get impacts at the object ID level
-                ds_impacts["inun_depth"].loc[:, proj.physical_projection.sea_level_rise.value, strat.name, event_name] = gdf_impacts["Inundation Depth"].values
-                ds_impacts["total_damage"].loc[:, proj.physical_projection.sea_level_rise.value, strat.name, event_name] = gdf_impacts["Total Damage"].values
+                # Align rows by Object ID rather than trusting positional order:
+                # different scenarios may return footprints in a different order,
+                # which would otherwise silently misalign the damage arrays.
+                impacts_by_id = gdf_impacts.set_index("Object ID")
+                impacts_by_id = impacts_by_id.reindex(object_id_order)
+                missing = impacts_by_id["Total Damage"].isna()
+                if missing.any():
+                    raise ValueError(
+                        f"read_impacts_dataset: scenario '{scen_name}' is missing "
+                        f"impacts for {int(missing.sum())} object(s) present in the "
+                        "reference footprint set; cannot align damage arrays."
+                    )
+                ds_impacts["inun_depth"].loc[:, proj.physical_projection.sea_level_rise.value, strat.name, event_name] = impacts_by_id["Inundation Depth"].values
+                ds_impacts["total_damage"].loc[:, proj.physical_projection.sea_level_rise.value, strat.name, event_name] = impacts_by_id["Total Damage"].values
     return ds_impacts
 
 # 5. General method

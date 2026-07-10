@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "floodadapt-abm"
+version = "0.1.0"
+description = "Agent-based flood adaptation simulation coupled with DYNAMO-M SEU decision framework."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy<2.5",
+    "xarray",
+    "scipy",
+    "pandas",
+    "netcdf4",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+# Full lookup-table generation pipeline (stage 1) requires flood-adapt
+pipeline = ["flood-adapt==1.1.3"]
+# DYNAMO-M native ABM framework (Phase 4b-full + PRE.1). Not needed by the MVP,
+# which runs via the dependency-free mesa_native mirror. Pin exact versions once
+# PRE.1 (verification/preflight_4b_full/step1_import_test.py) records them.
+dynamo = ["mesa==3.3.1", "honeybees==1.2.0"]
+dev = ["pytest>=7", "pytest-cov", "ipykernel", "jupyterlab"]
+
+[tool.setuptools]
+packages = ["floodadapt_abm"]
+
+[tool.pytest.ini_options]
+# Put the repo root on sys.path so `from tests.conftest import ...` resolves
+# regardless of the editable-install mode (PEP 660 strict editables only expose
+# the declared `floodadapt_abm` package, not the top-level `tests` namespace).
+pythonpath = ["."]
+testpaths = ["tests"]

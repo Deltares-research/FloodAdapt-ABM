@@ -1,4 +1,12 @@
 *.png
 *.nc
 *.pyc
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+.idea/
+.vscode/
 
+# Local verification bundles (present for gates, not tracked)
+verification/
