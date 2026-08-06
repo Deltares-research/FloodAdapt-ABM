@@ -288,12 +288,24 @@ class TestPropertyCapping:
         dmg = bridge.get_current_damages("ev_000")
         assert np.all(dmg <= bridge.max_pot_dmg + 1e-3)
 
-    def test_wealth_consistent_with_income(
-        self, bridge: DynamoDecisionBridge
-    ) -> None:
-        """Wealth should equal income * income_to_wealth_ratio."""
-        expected_wealth = bridge.income * bridge.config.decision.income_to_wealth_ratio
-        np.testing.assert_allclose(bridge.wealth, expected_wealth, rtol=1e-4)
+    def test_wealth_consistent_with_income(self, mock_ds) -> None:
+        """LEGACY income mode: wealth == income * income_to_wealth_ratio.
+
+        Pinned to ``CouplingConfig.legacy()`` — the relation is specific to
+        the historical ``mpd_ratio`` fallback; the current default
+        (``synthetic_lognormal``) uses the percentile-varying native
+        wealth-ratio table instead (covered in ``test_income_model.py``).
+        """
+        legacy_bridge = DynamoDecisionBridge(
+            ds=mock_ds, config=CouplingConfig.legacy()
+        )
+        expected_wealth = (
+            legacy_bridge.income
+            * legacy_bridge.config.decision.income_to_wealth_ratio
+        )
+        np.testing.assert_allclose(
+            legacy_bridge.wealth, expected_wealth, rtol=1e-4
+        )
 
     def test_wealth_upper_bounded(self, bridge: DynamoDecisionBridge) -> None:
         """Wealth should not be negative (income from max_pot_dmg is non-negative)."""

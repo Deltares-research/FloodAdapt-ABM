@@ -1,8 +1,15 @@
 """
 simulation_engine.py
 ====================
-Unified agent-based flood-adaptation simulation engine (Phase 2 + Phase 3 of
-the step-wise refactoring).
+Unified agent-based flood-adaptation simulation engine.
+
+.. note:: **Role: compute kernel + verification/experiments backend.**
+   Every driver delegates its numeric per-year work to
+   :meth:`SimulationEngine.step`; ``engine.run(n_jobs=...)`` is the parallel
+   Monte-Carlo backend used for verification and experiments.  The main
+   application entry point is
+   :func:`~floodadapt_abm.mesa_native_full.run_mesa_native_full` (real
+   honeybees ``Model`` clock).
 
 ``SimulationEngine`` is the single owner of *time and data*:
 
@@ -34,7 +41,12 @@ from numpy import ndarray
 
 from floodadapt_abm.agent_state import AgentState
 from floodadapt_abm.coupling_config import CouplingConfig, DecisionConfig
-from floodadapt_abm.decision_rule import DecisionRule, SEURule
+from floodadapt_abm.decision_rule import (
+    ACTION_ADAPT,
+    ACTION_INSURE,
+    DecisionRule,
+    SEURule,
+)
 from floodadapt_abm._core.dynamo_decision_bridge import DynamoDecisionBridge
 from floodadapt_abm.event_utils import draw_year_events
 
@@ -55,6 +67,15 @@ class SimulationEngine:
     income_per_agent, amenity_value_per_agent : np.ndarray or None
         Optional per-*residential*-agent economic arrays, forwarded to the data
         layer.  ``None`` triggers the same fallbacks as ``DynamoDecisionBridge``.
+    wealth_per_agent : np.ndarray or None
+        Optional per-agent wealth array (used together with
+        ``income_per_agent``); ``None`` derives wealth from income per the
+        active ``income_mode``.
+    income_percentile_per_agent : np.ndarray or None
+        Optional per-agent income percentiles in ``[1, 99]`` (e.g. derived
+        from census block-group data) consumed by
+        ``income_mode="synthetic_lognormal"``; ``None`` draws the uniform
+        native fallback.
     damage_dtype : np.dtype
         Storage dtype for the damage history (default ``np.float32``).  Integer
         dtypes trigger ``np.rint`` rounding, matching ``ABMSimulator``.
@@ -77,6 +98,8 @@ class SimulationEngine:
         income_per_agent: np.ndarray | None = None,
         amenity_value_per_agent: np.ndarray | None = None,
         damage_dtype: np.dtype = np.float32,
+        wealth_per_agent: np.ndarray | None = None,
+        income_percentile_per_agent: np.ndarray | None = None,
     ) -> None:
         self.config: CouplingConfig = config if config is not None else CouplingConfig()
         self._dec: DecisionConfig = self.config.decision
@@ -88,6 +111,8 @@ class SimulationEngine:
             config=self.config,
             income_per_agent=income_per_agent,
             amenity_value_per_agent=amenity_value_per_agent,
+            wealth_per_agent=wealth_per_agent,
+            income_percentile_per_agent=income_percentile_per_agent,
         )
         self.n_agents: int = self._data.n_agents
         self.object_ids: np.ndarray = self._data.object_ids
@@ -119,17 +144,36 @@ class SimulationEngine:
         # drivers (e.g. FloodAdaptSLRModel) detect that their view of
         # ``self.state`` has been invalidated by a later reset.
         self.state_epoch: int = 0
+        # Per-agent premium locked at last year's decision (paid by agents
+        # insured for the current year).  Zero at the start of every sequence.
+        self._premium_locked: np.ndarray = np.zeros(self.n_agents, dtype=np.float32)
 
     # -----------------------------------------------------------------------
     # Event generation
     # -----------------------------------------------------------------------
-    def draw_year_events(self, rng: np.random.Generator, dt: float = 1.0) -> list[str]:
+    def draw_year_events(
+        self,
+        rng: np.random.Generator,
+        dt: float = 1.0,
+        event_severity: np.ndarray | None = None,
+    ) -> list[str]:
         """
         Draw the flood events for a single year (unified generator).
 
         Delegates to :func:`floodadapt_abm.event_utils.draw_year_events`, using
-        this engine's event catalogue and the configured
-        ``max_events_per_year`` cap.
+        this engine's event catalogue and the configured draw mode
+        (``event_draw_mode``), cap (``max_events_per_year``) and cap policy
+        (``cap_policy``).
+
+        Parameters
+        ----------
+        rng : np.random.Generator
+            Generator for this year's draw.
+        dt : float
+            Timestep length in years (default ``1.0``).
+        event_severity : np.ndarray or None
+            Per-event damage ranking key, required only when the cap binds
+            under ``cap_policy="largest_damage"``.
         """
         return draw_year_events(
             self._event_names,
@@ -137,6 +181,9 @@ class SimulationEngine:
             rng,
             max_events_per_year=self._dec.max_events_per_year,
             dt=dt,
+            mode=self._dec.event_draw_mode,
+            cap_policy=self._dec.cap_policy,
+            event_severity=event_severity,
         )
 
     # -----------------------------------------------------------------------
@@ -179,21 +226,178 @@ class SimulationEngine:
     # -----------------------------------------------------------------------
     # State updates
     # -----------------------------------------------------------------------
-    def update_flood_experience(self, flooded_agents: np.ndarray) -> None:
+    def update_flood_experience(
+        self,
+        flooded_agents: np.ndarray,
+        severity: np.ndarray | None = None,
+    ) -> None:
         """
         Update ``flood_timer`` and ``risk_perception`` after a year.
 
         Replicates the DYNAMO-M decay formula
-        ``rp = rp_max * 1.6^(coef * flood_timer) + rp_min`` (identical to
-        ``DynamoDecisionBridge.update_flood_experience``).
+        ``rp = peak * 1.6^(coef * flood_timer) + rp_min``.
+
+        The post-flood ``peak`` depends on ``perception_mode``:
+
+        * ``"binary"`` (legacy/native): ``peak = risk_perc_max`` for every
+          flooded agent — a nuisance flood and a catastrophe are identical
+          (native DYNAMO-M ``flood_risk.py:619`` behaves the same).
+        * ``"severity"``: the peak scales with damage severity through one
+          of three one-parameter functional forms selected by
+          ``perception_severity_form`` (see :meth:`_severity_peak` and the
+          ``DecisionConfig`` docstring): ``"power"`` (default, concave
+          power law — a total loss reproduces the full legacy spike,
+          gamma = 0.5: 25 % damage -> ~71 % of the max),
+          ``"saturating_exp"`` (concave with finite slope at zero
+          severity), or ``"threshold_linear"`` (no response below a damage
+          threshold).  A deliberate improvement beyond native DYNAMO-M.
+
+        Parameters
+        ----------
+        flooded_agents : np.ndarray[bool]
+            Agents that experienced a significant flood this year.
+        severity : np.ndarray or None
+            Per-agent damage severity (``realised / max_pot_dmg``); required
+            for ``perception_mode="severity"``, ignored in binary mode.
         """
         self.state.flood_timer += 1
         self.state.flood_timer[flooded_agents] = 0
+
+        if self._dec.perception_mode == "severity":
+            if severity is None:
+                raise ValueError(
+                    "perception_mode='severity' requires the severity array."
+                )
+            self.state.last_flood_severity[flooded_agents] = np.clip(
+                severity[flooded_agents], 0.0, 1.0
+            ).astype(np.float32)
+            peak = self._severity_peak()
+        elif self._dec.perception_mode == "binary":
+            # Legacy/native scalar peak (severity still recorded for
+            # diagnostics when available).
+            if severity is not None:
+                self.state.last_flood_severity[flooded_agents] = np.clip(
+                    severity[flooded_agents], 0.0, 1.0
+                ).astype(np.float32)
+            peak = self._dec.risk_perc_max
+        else:
+            raise ValueError(
+                f"Unknown perception_mode {self._dec.perception_mode!r}; "
+                "expected 'binary' or 'severity'."
+            )
+
         self.state.risk_perception = (
-            self._dec.risk_perc_max
+            peak
             * (self._RISK_PERC_BASE ** (self._dec.risk_perc_coef * self.state.flood_timer))
             + self._dec.risk_perc_min
         ).astype(np.float32)
+
+    def _severity_peak(self) -> np.ndarray:
+        """
+        Map each agent's last flood severity to its perception peak.
+
+        Dispatches on ``perception_severity_form``.  All forms map severity
+        ``s`` in [0, 1] (``state.last_flood_severity``, already clipped) to a
+        peak in ``[0, risk_perc_max]``, are monotone in ``s``, and agree at
+        ``s = 1`` (total loss -> the full legacy ``risk_perc_max`` spike).
+        They differ in the small-flood response — the property survey data
+        can discriminate (see ``docs/calibration_validation_guide.md``):
+
+        * ``"power"``: infinite slope at ``s = 0`` (small floods still
+          spike perception strongly);
+        * ``"saturating_exp"``: finite slope at ``s = 0``;
+        * ``"threshold_linear"``: zero response below ``s0``.
+
+        Returns
+        -------
+        np.ndarray
+            Per-agent perception peak, shape ``(n_agents,)``.
+        """
+        form = self._dec.perception_severity_form
+        if form == "power":
+            peak = self._dec.risk_perc_max * (
+                self.state.last_flood_severity
+                ** self._dec.perception_severity_exponent
+            )
+        elif form == "saturating_exp":
+            k = self._dec.perception_severity_rate
+            if k <= 0.0:
+                raise ValueError(
+                    "perception_severity_rate must be > 0 for "
+                    f"perception_severity_form='saturating_exp'; got {k}."
+                )
+            peak = self._dec.risk_perc_max * (
+                -np.expm1(-k * self.state.last_flood_severity)
+                / -np.expm1(-k)
+            )
+        elif form == "threshold_linear":
+            s0 = self._dec.perception_severity_threshold
+            if not 0.0 <= s0 < 1.0:
+                raise ValueError(
+                    "perception_severity_threshold must be in [0, 1) for "
+                    f"perception_severity_form='threshold_linear'; got {s0}."
+                )
+            peak = self._dec.risk_perc_max * np.clip(
+                (self.state.last_flood_severity - s0) / (1.0 - s0), 0.0, 1.0
+            )
+        else:
+            raise ValueError(
+                f"Unknown perception_severity_form {form!r}; expected "
+                "'power', 'saturating_exp' or 'threshold_linear'."
+            )
+        return peak
+
+    def _compute_premium_offer(self) -> np.ndarray:
+        """
+        Price next year's insurance premium per agent at the current SLR.
+
+        Both pricing modes start from the **expected annual damage** (EAD)
+        under no measures.  Under the Poisson hazard semantics
+        ``sum(freq * damage)`` *is* the exact EAD, so the premium is
+        actuarially consistent with the hazard model.
+
+        * ``insurance_pricing="community"`` (native): every household is
+          charged the same **mean** EAD of the node — the ported
+          ``InsurerAgent.derive_premium`` (``insurer_agent.py:20-26``).
+          Note this is native's own simplification: it charges the full mean
+          EAD even though the policy only covers ``1 - deductible`` of each
+          loss, i.e. it carries an implicit loading of
+          ``1 / (1 - deductible)`` on top of the cross-subsidy.
+        * ``insurance_pricing="risk_based"``: every household is charged its
+          **own expected payout**, ``(1 - deductible) * EAD_i`` — the
+          actuarially fair price of the cover actually provided.
+
+        The result is then scaled by ``insurance_loading`` (insurer margin)
+        and reduced by ``insurance_subsidy`` (public share of the premium).
+
+        Returns
+        -------
+        premium : np.ndarray[float32], shape (n_agents,)
+            Annual premium offered to each household for the coming year.
+        """
+        ead = self._data.compute_expected_annual_damages(False)
+
+        if self._dec.insurance_pricing == "risk_based":
+            # Fair price of the cover actually sold: the insurer reimburses
+            # (1 - deductible) of every loss, so its expected payout — and
+            # hence the fair premium — is (1 - deductible) * EAD.
+            premium = (
+                (1.0 - self._dec.insurance_deductible)
+                * np.asarray(ead, dtype=np.float32)
+            )
+        elif self._dec.insurance_pricing == "community":
+            premium = np.full(
+                self.n_agents, float(ead.mean()), dtype=np.float32
+            )
+        else:
+            raise ValueError(
+                f"Unknown insurance_pricing {self._dec.insurance_pricing!r}; "
+                "expected 'community' or 'risk_based'."
+            )
+
+        premium = premium * self._dec.insurance_loading
+        premium = premium * (1.0 - self._dec.insurance_subsidy)
+        return premium.astype(np.float32)
 
     def _apply_lifespan_reset(self) -> np.ndarray:
         """
@@ -259,47 +463,119 @@ class SimulationEngine:
         """
         damages_no_adapt, damages_adapt = self.prepare_damages(slr_value, interp_method)
 
-        occurred = self.draw_year_events(rng)
+        # Per-event community gross damage at this year's SLR: the ranking key
+        # for the deterministic "largest_damage" cap policy.  Only needed when
+        # a cap can bind; the legacy mode ignores it entirely.
+        if (
+            self._dec.max_events_per_year is not None
+            and self._dec.cap_policy == "largest_damage"
+        ):
+            event_severity = damages_no_adapt.sum(axis=0)
+        else:
+            event_severity = None
+
+        occurred = self.draw_year_events(rng, event_severity=event_severity)
         realised = self._realised_damage(occurred, damages_no_adapt, damages_adapt)
-        was_flooded = realised > 0
+
+        # Damage severity per agent (fraction of max potential damage).
+        # ``was_flooded`` uses the significance threshold: with the legacy
+        # threshold 0.0 this is exactly the historical ``realised > 0``
+        # (agents with max_pot_dmg == 0 have realised == 0 after capping,
+        # so both formulations agree); a positive threshold stops float
+        # round-off and tiny post-adaptation residual damages from
+        # registering as flood experiences.
+        severity = np.divide(
+            realised,
+            self.max_pot_dmg,
+            out=np.zeros(self.n_agents, dtype=np.float64),
+            where=self.max_pot_dmg > 0,
+        )
+        was_flooded = severity > self._dec.flood_significance_threshold
 
         # Flood experience (risk-perception update) before the decision.
-        self.update_flood_experience(was_flooded)
+        self.update_flood_experience(was_flooded, severity)
 
         # Age & expire adaptations (lifespan-dryproof reset).
         expired = self._apply_lifespan_reset()
 
-        # Decision.
-        newly_adapted = self.decision_rule.should_adapt(
+        # Insurance bookkeeping for THIS year (coverage timing: insurance
+        # decided at year t covers year t+1, so this year's payout uses the
+        # status and premium locked at the end of last year; year 0 starts
+        # uninsured).  ``damage_history`` records GROSS damage regardless.
+        include_insurance = self._dec.include_insurance
+        if include_insurance:
+            out_of_pocket = np.where(
+                self.state.is_insured,
+                self._dec.insurance_deductible * realised,
+                realised,
+            )
+            premium_paid = np.where(
+                self.state.is_insured, self._premium_locked, 0.0
+            ).astype(np.float32)
+            # Premium OFFER for next year, priced at this year's SLR.
+            premium_offer = self._compute_premium_offer()
+            premium_scalar = float(premium_offer.mean())
+        else:
+            out_of_pocket = realised
+            premium_paid = None
+            premium_scalar = 0.0
+            premium_offer = None
+
+        # Decision.  The rule receives the SEU exceedance probabilities
+        # (``p_floods_seu``: raw frequencies under the legacy "raw_freq" mode,
+        # ``1 - exp(-freq)`` under "exceedance") via the ``event_freqs``
+        # parameter, whose name is kept for backward compatibility.
+        actions = self.decision_rule.decide(
             agent_state=self.state,
             damages_this_year=realised.astype(np.float32),
             damages_no_adapt=damages_no_adapt,
             damages_adapt=damages_adapt,
-            event_freqs=self._event_freqs,
+            event_freqs=self._data.p_floods_seu,
             max_pot_dmg=self.max_pot_dmg,
             adaptation_costs=self._annual_adapt_cost,
+            insurance_premium=premium_offer,
         )
+        newly_adapted = actions == ACTION_ADAPT
 
         # Bookkeeping: newly adapted agents start a fresh adaptation age.
         self.state.is_adapted[newly_adapted] = True
         self.state.time_adapted[newly_adapted] = 0
+
+        if include_insurance:
+            # Insurance is annual: the status is re-decided every year
+            # (native resets adapt==2 -> 0 each tick, coastal_nodes.py:1998)
+            # and never coexists with physical floodproofing.
+            newly_insured = (actions == ACTION_INSURE) & ~self.state.is_adapted
+            self.state.is_insured = newly_insured
+            self._premium_locked = premium_offer
 
         if np.issubdtype(self.damage_dtype, np.integer):
             realised_store = np.rint(realised).astype(self.damage_dtype)
         else:
             realised_store = realised.astype(self.damage_dtype)
 
-        return {
+        result = {
             "year_index": year_index,
             "occurred_events": occurred,
             "damages": realised_store,
             "was_flooded": was_flooded,
+            "flood_severity": severity.astype(np.float32),
             "newly_adapted": newly_adapted,
             "expired": expired,
             "is_adapted": self.state.is_adapted.copy(),
             "eu_adapt": getattr(self.decision_rule, "last_eu_adapt", None),
             "eu_do_nothing": getattr(self.decision_rule, "last_eu_do_nothing", None),
         }
+        if include_insurance:
+            result["out_of_pocket"] = out_of_pocket.astype(self.damage_dtype)
+            result["premium_paid"] = premium_paid
+            result["premium"] = premium_scalar
+            result["newly_insured"] = newly_insured
+            result["is_insured"] = self.state.is_insured.copy()
+            result["eu_insure"] = getattr(
+                self.decision_rule, "last_eu_insure", None
+            )
+        return result
 
     def reset_state(self) -> None:
         """
@@ -316,6 +592,7 @@ class SimulationEngine:
             risk_perc_min=self._dec.risk_perc_min,
         )
         self.state_epoch += 1
+        self._premium_locked = np.zeros(self.n_agents, dtype=np.float32)
 
     def run(
         self,
@@ -363,14 +640,19 @@ class SimulationEngine:
         Returns
         -------
         results : dict
-            ``damage_history`` (``no_seq, n_agents, n_years``),
-            ``adapted_history`` (bool, same shape),
+            ``damage_history`` (``no_seq, n_agents, n_years``; always GROSS
+            damage), ``adapted_history`` (bool, same shape),
             ``adoption_fraction`` (``no_seq, n_years``),
             optionally ``eu_adapt_history`` / ``eu_do_nothing_history``.
+            When ``include_insurance`` is on, additionally
+            ``insured_history`` (bool), ``out_of_pocket_history`` (damage
+            dtype), ``premium_history`` (``no_seq, n_years``) and
+            ``insured_fraction`` (``no_seq, n_years``).
         """
         slr_values = np.asarray(slr_values, dtype=float)
         n_years = slr_values.shape[0]
         base_seed = seed if seed is not None else self.config.random_seed
+        include_insurance = self._dec.include_insurance
 
         damage_history = np.zeros(
             (no_seq, self.n_agents, n_years), dtype=self.damage_dtype
@@ -386,6 +668,22 @@ class SimulationEngine:
             np.full((no_seq, self.n_agents, n_years), np.nan, dtype=np.float32)
             if track_eu else None
         )
+        insured_history = (
+            np.zeros((no_seq, self.n_agents, n_years), dtype=bool)
+            if include_insurance else None
+        )
+        out_of_pocket_history = (
+            np.zeros((no_seq, self.n_agents, n_years), dtype=self.damage_dtype)
+            if include_insurance else None
+        )
+        premium_history = (
+            np.zeros((no_seq, n_years), dtype=np.float32)
+            if include_insurance else None
+        )
+        premium_paid_history = (
+            np.zeros((no_seq, self.n_agents, n_years), dtype=np.float32)
+            if include_insurance else None
+        )
 
         def _store(s: int, out: dict) -> None:
             damage_history[s] = out["damages"]
@@ -393,6 +691,11 @@ class SimulationEngine:
             if track_eu and out["eu_adapt"] is not None:
                 eu_adapt_history[s] = out["eu_adapt"]
                 eu_do_nothing_history[s] = out["eu_do_nothing"]
+            if include_insurance:
+                insured_history[s] = out["insured"]
+                out_of_pocket_history[s] = out["out_of_pocket"]
+                premium_history[s] = out["premium"]
+                premium_paid_history[s] = out["premium_paid"]
 
         if n_jobs == 1:
             # Sequential path (unchanged): one engine, rule RNG threads across
@@ -407,6 +710,11 @@ class SimulationEngine:
                     if track_eu and res["eu_adapt"] is not None:
                         eu_adapt_history[s, :, t] = res["eu_adapt"]
                         eu_do_nothing_history[s, :, t] = res["eu_do_nothing"]
+                    if include_insurance:
+                        insured_history[s, :, t] = res["is_insured"]
+                        out_of_pocket_history[s, :, t] = res["out_of_pocket"]
+                        premium_history[s, t] = res["premium"]
+                        premium_paid_history[s, :, t] = res["premium_paid"]
         else:
             # Parallel path: independent sequences on per-worker engine clones
             # that share a pre-warmed, read-only SLR interpolation cache.
@@ -434,6 +742,12 @@ class SimulationEngine:
         if track_eu:
             results["eu_adapt_history"] = eu_adapt_history
             results["eu_do_nothing_history"] = eu_do_nothing_history
+        if include_insurance:
+            results["insured_history"] = insured_history
+            results["out_of_pocket_history"] = out_of_pocket_history
+            results["premium_history"] = premium_history
+            results["premium_paid_history"] = premium_paid_history
+            results["insured_fraction"] = insured_history.mean(axis=1)
         return results
 
     # -----------------------------------------------------------------------
@@ -467,6 +781,7 @@ class SimulationEngine:
             risk_perc_min=self._dec.risk_perc_min,
         )
         eng.state_epoch = 0
+        eng._premium_locked = 0.0
         return eng
 
     def _simulate_one_sequence(
@@ -481,6 +796,7 @@ class SimulationEngine:
         """Run one Monte-Carlo sequence on an isolated engine clone."""
         eng = self._clone_for_worker(seq_index, base_seed)
         rng = np.random.default_rng(base_seed + seq_index)
+        include_insurance = self._dec.include_insurance
         damages = np.zeros((self.n_agents, n_years), dtype=self.damage_dtype)
         adapted = np.zeros((self.n_agents, n_years), dtype=bool)
         eu_adapt = (
@@ -491,6 +807,21 @@ class SimulationEngine:
             np.full((self.n_agents, n_years), np.nan, dtype=np.float32)
             if track_eu else None
         )
+        insured = (
+            np.zeros((self.n_agents, n_years), dtype=bool)
+            if include_insurance else None
+        )
+        out_of_pocket = (
+            np.zeros((self.n_agents, n_years), dtype=self.damage_dtype)
+            if include_insurance else None
+        )
+        premium = (
+            np.zeros(n_years, dtype=np.float32) if include_insurance else None
+        )
+        premium_paid = (
+            np.zeros((self.n_agents, n_years), dtype=np.float32)
+            if include_insurance else None
+        )
         for t in range(n_years):
             res = eng.step(t, float(slr_values[t]), rng, interp_method)
             damages[:, t] = res["damages"]
@@ -498,11 +829,20 @@ class SimulationEngine:
             if track_eu and res["eu_adapt"] is not None:
                 eu_adapt[:, t] = res["eu_adapt"]
                 eu_do_nothing[:, t] = res["eu_do_nothing"]
+            if include_insurance:
+                insured[:, t] = res["is_insured"]
+                out_of_pocket[:, t] = res["out_of_pocket"]
+                premium[t] = res["premium"]
+                premium_paid[:, t] = res["premium_paid"]
         return {
             "damages": damages,
             "adapted": adapted,
             "eu_adapt": eu_adapt,
             "eu_do_nothing": eu_do_nothing,
+            "insured": insured,
+            "out_of_pocket": out_of_pocket,
+            "premium": premium,
+            "premium_paid": premium_paid,
         }
 
 

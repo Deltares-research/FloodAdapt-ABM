@@ -5,20 +5,21 @@ module, public class, dataclass and function, with signatures, responsibilities,
 assumptions and runnable code examples. It also maps the examples/tests/verification
 layout and the module dependency graph.
 
-**Companion docs (read alongside this one):**
+**Documentation roles.** Two core documents with distinct jobs, plus one method guide:
 
-- [`README.md`](README.md) — repo front door + quickstart.
-- [`docs/architecture.md`](docs/architecture.md) — the *why* and the *design*: MVP
-  scope, the Strategy-Pattern architecture, the full SEU mathematics, UML/sequence/
-  data-flow diagrams, every delivered phase (0 → 4b-full), the roadmap and the
-  day-by-day progress log. **This file is the *what* (API); that file is the *why*.**
-- [`docs/AGENTS.md`](docs/AGENTS.md) — operational guide (data requirements, NetCDF
-  schema, gotchas, engine-performance contract).
-- [`docs/adaptation_decisions_complete.md`](docs/adaptation_decisions_complete.md) —
-  the DYNAMO-M decision-science reference (source of the ported SEU logic).
+- **This file is the reference manual.** It answers *how to use the package*: every
+  module, public class, dataclass, function and configuration field, with examples.
+- [`docs/architecture.md`](docs/architecture.md) is **the design record**. It answers
+  *why and how the system is built*: MVP scope, the Strategy-Pattern architecture, the
+  full SEU mathematics (including insurance), diagrams, phase history and every
+  deviation from native DYNAMO-M.
+- [`docs/calibration_validation_guide.md`](docs/calibration_validation_guide.md) is
+  **the method guide**: how to calibrate and validate the behavioural parameters.
 
-**Status:** implementation complete and gated through **Phase 4b-full** (native-class
-integration) + the PRE.2 real-table gate; full `pytest` suite **147 tests, all pass**.
+[`README.md`](README.md) is the front door and quickstart.
+
+**Status:** implementation complete and gated through the native-class
+integration) + the PRE.2 real-table gate; full `pytest` suite **219 tests, all pass**.
 
 ---
 
@@ -31,9 +32,9 @@ integration) + the PRE.2 real-table gate; full `pytest` suite **147 tests, all p
 5. [Decision rules — `decision_rule.py`](#5-decision-rules--decision_rulepy)
 6. [Stochastic events — `event_utils.py`](#6-stochastic-events--event_utilspy)
 7. [Simulation engine — `simulation_engine.py`](#7-simulation-engine--simulation_enginepy)
-8. [Live parity rule — `dynamo_live_rule.py` (Phase 4a)](#8-live-parity-rule--dynamo_live_rulepy-phase-4a)
-9. [Mesa-native scaffold — `mesa_native.py` (Phase 4b)](#9-mesa-native-scaffold--mesa_nativepy-phase-4b)
-10. [Native-class integration — `mesa_native_full.py` (Phase 4b-full)](#10-native-class-integration--mesa_native_fullpy-phase-4b-full)
+8. [Preferred rule — `dynamo_live_rule.py`](#8-preferred-rule--dynamo_live_rulepy)
+9. [Verification mirror — `mesa_native.py`](#9-verification-mirror--mesa_nativepy)
+10. [Preferred driver — `mesa_native_full.py`](#10-preferred-driver--mesa_native_fullpy)
 11. [Lookup-table adapter — `coastal_node_adapter.py`](#11-lookup-table-adapter--coastal_node_adapterpy)
 12. [Ported kernels — `_core/`](#12-ported-kernels--_core)
 13. [Stage-1 pipeline — `setup_lookup_table.py`](#13-stage-1-pipeline--setup_lookup_tablepy)
@@ -54,16 +55,18 @@ Everything importable from the top-level package (`floodadapt_abm/__init__.py`):
 
 | Symbol | Kind | Summary |
 |---|---|---|
-| `SimulationEngine` | class | **Recommended entry point.** Owns time, data plumbing, event generation, the lifespan reset, and a pluggable `DecisionRule`. |
-| `DecisionRule` | ABC | Strategy interface — subclass to define new adaptation logic. |
-| `ThresholdRule` | class | Legacy reactive heuristic (adapt when damage ≥ threshold). |
-| `SEURule` | class | The MVP science: ported DYNAMO-M SEU decision rule. |
+| `SimulationEngine` | class | The compute kernel: owns time, data plumbing, event generation, the lifespan reset, and a pluggable `DecisionRule`. Also the parallel Monte-Carlo backend. |
+| `DecisionRule` | ABC | Strategy interface. Subclass to define new adaptation logic. Carries a `STATUS` tag. |
+| `ThresholdRule` | class | *(status: experiment)* Legacy reactive heuristic (adapt when damage exceeds a threshold). |
+| `SEURule` | class | *(status: reference)* Parity-gated NumPy port of the DYNAMO-M SEU rule. |
+| `preferred_decision_rule` | func | **Returns the preferred rule for this environment**, with a parity-verified fallback. |
 | `AgentState` | dataclass | Vectorised per-agent state arrays. |
 | `CouplingConfig` / `DecisionConfig` / `NetCDFMappingConfig` | dataclasses | Configuration. |
 | `draw_year_events` / `generate_event_sequences` | funcs | Unified stochastic event generator. |
-| `DynamoLiveRule` / `DynamoMNotAvailable` / `DYNAMO_M_AVAILABLE` | class/exc/flag | Phase 4a live-parity rule (guarded native DYNAMO-M import). |
-| `FloodAdaptSLRModel` / `CoastalNodePopulation` / `MesaAgents` / `run_mesa_native` | classes/func | Phase 4b Mesa-native scaffold (framework-free time-ownership inversion). |
-| `FloodAdaptSLRModelFull` / `CoastalNodePopulationFull` / `AgentsFull` / `run_mesa_native_full` / `HoneybeesNotAvailable` / `HONEYBEES_AVAILABLE` | classes/func/exc/flag | Phase 4b-full native-class integration (real honeybees `Model`). |
+| `DynamoLiveRule` / `DynamoMNotAvailable` / `DYNAMO_M_AVAILABLE` | class/exc/flag | *(status: preferred)* Live coupling to the native DYNAMO-M `DecisionModule`, for floodproofing and insurance. Guarded import. |
+| `STATUS_PREFERRED` / `STATUS_REFERENCE` / `STATUS_EXPERIMENT` / `STATUS_VERIFICATION` / `STATUS_DEPRECATED` | str | The status vocabulary; compare against `rule.STATUS`. |
+| `FloodAdaptSLRModel` / `CoastalNodePopulation` / `MesaAgents` / `run_mesa_native` | classes/func | *(status: verification)* Framework-free mirror of the tick loop; the bit-parity gate. |
+| `FloodAdaptSLRModelFull` / `CoastalNodePopulationFull` / `AgentsFull` / `run_mesa_native_full` / `HoneybeesNotAvailable` / `HONEYBEES_AVAILABLE` | classes/func/exc/flag | *(status: preferred)* **Recommended entry point.** A real honeybees `Model` owns the clock. |
 | `ABMSimulator` | class | **Deprecated** legacy stage-2 simulator (kept for the Gate-1 regression). |
 | `DynamoDecisionBridge` | class | Internal `_core` plumbing, re-exported for backward compat. |
 
@@ -78,11 +81,11 @@ from floodadapt_abm.setup_lookup_table import create_lookup_table
 
 ```python
 import xarray as xr
-from floodadapt_abm import SimulationEngine, SEURule, CouplingConfig
+from floodadapt_abm import SimulationEngine, preferred_decision_rule, CouplingConfig
 
 ds = xr.open_dataset("lookup_table_charleston_beta_release_ABM_probabilistic_set.nc")
 cfg = CouplingConfig()                      # all defaults (Charleston-calibrated)
-rule = SEURule(cfg.decision, rng=None)      # the DYNAMO-M SEU science
+rule = preferred_decision_rule(cfg.decision)   # native DYNAMO-M when available
 engine = SimulationEngine(ds, decision_rule=rule, config=cfg)
 
 slr_values = [0.0, 0.1, 0.2, 0.3]           # SLR (feet) per simulated year
@@ -185,12 +188,66 @@ DYNAMO-M `settings.yml`:
 | `expenditure_cap` | `0.06` | max fraction of income spendable on adaptation |
 | `amenity_weight` | `1.0` | weight on amenity value in NPV |
 | `error_interval` | `0.0` | half-width of uniform EU error (0 → deterministic) |
-| `income_to_wealth_ratio` | `4.14` | income→wealth multiplier when wealth absent |
-| `max_events_per_year` | `4` | cap on stochastic events per year (see Sec.6) |
+| `income_to_wealth_ratio` | `4.14` | income→wealth multiplier (legacy `mpd_ratio` mode) |
+| `max_events_per_year` | `None` | occurrence cap per year (legacy preset: `4`; see Sec.6) |
 | `lifespan_dryproof` | `75` | dry-floodproofing service life (years); triggers reset |
+| `event_draw_mode` | `"poisson"` | hazard draw: `"poisson"` (exact rates) / `"bernoulli_clip"` (legacy) |
+| `nuisance_freq_threshold` | `None` | drop events with `freq >` threshold from the whole catalogue (set `1.0` for the Charleston set) |
+| `cap_policy` | `"largest_damage"` | surplus-occurrence discard: keep most damaging (deterministic) / `"random"` (legacy) |
+| `seu_prob_mode` | `"exceedance"` | SEU probabilities: `p = 1 − e^(−freq)` / `"raw_freq"` (legacy) |
+| `perception_mode` | `"severity"` | post-flood spike scales with damage severity / `"binary"` (legacy & native) |
+| `flood_significance_threshold` | `0.01` | min damage severity to register as flood experience (legacy `0.0`) |
+| `perception_severity_form` | `"power"` | severity→peak form: `"power"` / `"saturating_exp"` / `"threshold_linear"` (one parameter each; see below) |
+| `perception_severity_exponent` | `0.5` | `"power"`: concave severity exponent γ (γ→0 binary, γ=1 linear) |
+| `perception_severity_rate` | `3.0` | `"saturating_exp"`: rate k > 0 (larger k saturates faster) |
+| `perception_severity_threshold` | `0.1` | `"threshold_linear"`: damage severity s0 in [0, 1) below which no spike occurs |
+| `income_mode` | `"synthetic_lognormal"` | native income port / `"mpd_ratio"` (legacy, from building value) |
+| `median_income` | `70000.0` | regional median income for the synthetic distribution (site-specific) |
+| `mean_median_inc_ratio` | `1.15` | lognormal spread (native UN-WIID fallback) |
+| `adaptation_total_cost` | `None` | fixed per-household cost (native style); `None` → `fraction·max_pot_dmg` (legacy) |
+| `include_insurance` | `False` | offer insurance as a third decision option (matches native default) |
+| `insurance_deductible` | `0.1` | damage share still borne when insured (native hard-coded value) |
+| `insurance_pricing` | `"community"` | premium rating: `"community"` = flat mean-EAD rate (native `InsurerAgent`) / `"risk_based"` = each household's own expected payout `(1-deductible)*EAD_i` |
+| `insurance_loading` | `1.0` | multiplier on the actuarial premium (insurer margin); `1.0` = fair |
+| `insurance_subsidy` | `0.0` | fraction of the premium paid by a public scheme (premium analogue of native's adaptation subsidy) |
+
+`DecisionConfig.legacy()` / `CouplingConfig.legacy()` pin every behaviour switch to the
+pre-2026-07-review values **bit-exactly** (golden regression: `tests/test_legacy_mode.py`).
 
 Risk-perception law:
-`risk_perc = risk_perc_max · 1.6^(risk_perc_coef · flood_timer) + risk_perc_min`.
+`risk_perc = peak · 1.6^(risk_perc_coef · flood_timer) + risk_perc_min`,
+where `peak = risk_perc_max` in binary mode and, in severity mode with
+severity `s = realised/max_pot_dmg` clipped to [0, 1]:
+
+- `"power"`: `peak = risk_perc_max · s^γ` (default; total loss = full legacy spike),
+- `"saturating_exp"`: `peak = risk_perc_max · (1 − e^(−k·s)) / (1 − e^(−k))`,
+- `"threshold_linear"`: `peak = risk_perc_max · clip((s − s0)/(1 − s0), 0, 1)`.
+
+All three forms agree at `s = 1` and differ in the small-flood response; the
+rationale, preference order and survey-fitting recipe are in
+`docs/architecture.md` ("Severity-response formulations") and
+`docs/calibration_validation_guide.md`.
+
+**Insurance pricing modes, in plain language.** `"community"`: every household
+pays the same flat premium, equal to the pool's mean expected annual damage
+(native's rule). Low-risk households cross-subsidise high-risk ones.
+`"risk_based"`: each household pays its own expected payout,
+`(1 − deductible) · EAD_i`. This is the actuarially fair premium (the price
+that exactly covers the insurer's expected payments): no cross-subsidy, cheap
+for low-risk households, expensive for high-risk ones. `insurance_loading`
+multiplies the premium to represent insurer costs and margin (1.0 = at cost).
+`insurance_subsidy` is the fraction of the premium paid by a public scheme
+instead of the household.
+
+Provenance: community rating is native DYNAMO-M's `InsurerAgent` and mirrors
+real community-rated flood schemes (e.g. the US NFIP before its 2021 reform);
+risk-based pricing is the standard actuarial benchmark from insurance
+economics (and the direction of NFIP "Risk Rating 2.0"). The beyond-native
+modes exist (1) as a diagnostic — to test whether the flat community rate is
+what suppresses uptake (it is not; the expenditure cap binds under either
+rule, see notebook §5) — and (2) so that rating rule × loading × subsidy
+spans the premium designs a public insurer or regulator could realistically
+set.
 
 ### `CouplingConfig`
 Container: `netcdf: NetCDFMappingConfig`, `decision: DecisionConfig`,
@@ -235,34 +292,80 @@ st = AgentState.initial(3, income=np.array([40e3, 55e3, 70e3]),
 
 ## 5. Decision rules — `decision_rule.py`
 
-The Strategy Pattern seam. All rules implement one method:
+The Strategy Pattern seam. The primary method is the three-way `decide`:
 
 ```python
-should_adapt(agent_state, damages_this_year, damages_no_adapt, damages_adapt,
-             event_freqs, max_pot_dmg, adaptation_costs) -> np.ndarray[bool]
+decide(agent_state, damages_this_year, damages_no_adapt, damages_adapt,
+       event_freqs, max_pot_dmg, adaptation_costs,
+       insurance_premium=None) -> np.ndarray[int8]   # 0 nothing / 1 adapt / 2 insure
 ```
 
-which returns a boolean mask of **currently non-adapted** agents that newly adapt this
-year. Adaptation is irreversible within a year and never double-applied.
+The base class implements it on top of the two-way `should_adapt`, which returns a
+boolean mask of **currently non-adapted** agents that newly adapt this year, so
+two-way rules (including third-party ones) work unchanged. Adaptation is never
+double-applied within a year.
+
+### Rule status
+
+Every rule carries a `STATUS` class attribute saying how it is meant to be used.
+
+| Rule | `STATUS` | Use it for |
+|---|---|---|
+| `DynamoLiveRule` | `preferred` | Application runs: native DYNAMO-M decides floodproofing and insurance |
+| `SEURule` | `reference` | When DYNAMO-M is absent, and for per-household (risk-based) premiums |
+| `ThresholdRule` | `experiment` | The pre-coupling baseline, for comparison |
+
+`DynamoLiveRule` and `SEURule` are parity-gated (relative EU error < 1e-4, identical
+actions), so their results are interchangeable. Third-party subclasses inherit
+`STATUS = "experiment"` unless they override it.
+
+### `preferred_decision_rule(config, dynamo_path=None, ...)`
+
+Returns the preferred rule available in this environment, so callers do not
+hand-write availability checks:
+
+```python
+from floodadapt_abm import CouplingConfig, preferred_decision_rule
+
+cfg = CouplingConfig()
+rule = preferred_decision_rule(cfg.decision)
+rule.STATUS      # "preferred" if DYNAMO-M is installed, else "reference"
+```
+
+It returns `DynamoLiveRule` whenever DYNAMO-M is importable **and** the
+configuration is expressible natively; `SEURule` otherwise. The port is selected in
+exactly two cases: DYNAMO-M is absent, or per-agent premiums are configured
+(`include_insurance=True` with a pricing mode other than `"community"`). Native
+`calcEU_insure` discounts `premium.mean()`, so risk-based pricing is inexpressible
+natively, and `DynamoLiveRule.decide` raises on a varying premium rather than
+silently averaging it.
+
+Parallel runs are safe with either rule (`DynamoLiveRule.clone()` builds a fresh
+native module per worker), but the native kernels hold the GIL, so a parallel
+native run is correct yet effectively serial. Pass `SEURule` explicitly when
+parallel throughput matters.
 
 ### `DecisionRule(ABC)`
 - `__init__(config)` — stores a `DecisionConfig`.
-- `clone(rng_seed=None)` — independent copy for parallel execution (deep-copies RNG
-  state); overridden by stochastic rules.
+- `STATUS` — status tag; defaults to `"experiment"` for subclasses.
+- `clone(rng_seed=None)` — independent copy for parallel execution (forks the RNG);
+  overridden by stochastic rules.
+- `decide(...)` — the three-way contract; defaults to delegating to `should_adapt`.
 - `@abstractmethod should_adapt(...)`.
 
-### `ThresholdRule(DecisionRule)`
+### `ThresholdRule(DecisionRule)`  *(status: experiment)*
 Legacy reactive heuristic (the behaviour the coupling replaces): adapt when this
 year's realised damage exceeds `damage_threshold` (default `0.3`) of max potential
-damage. Deterministic; used as the bit-for-bit regression oracle.
+damage. Ignores income, affordability, risk perception and insurance. Deterministic;
+used as the bit-for-bit regression oracle and as a comparison baseline.
 
 `ThresholdRule(config, damage_threshold=0.3)`.
 
-### `SEURule(DecisionRule)`
-The MVP science. Computes `EU_do_nothing` vs `EU_adapt` (CRRA utility over
-time-discounted NPVs, integrated over perceived flood probability) and adapts agents
-for whom adapting has higher subjective expected utility. Uses the ported kernels in
-`_core`.
+### `SEURule(DecisionRule)`  *(status: reference)*
+The pure-NumPy port of the DYNAMO-M SEU science. Computes `EU_do_nothing`,
+`EU_adapt` and (when insurance is enabled) `EU_insure` (CRRA utility over
+time-discounted NPVs, integrated over perceived flood probability) and picks the
+highest. Uses the ported kernels in `_core`.
 
 `SEURule(config, rng=None, amenity_value=None)` — pass an RNG for stochastic error
 terms (`error_interval > 0`); `clone()` forks the RNG for parallel sequences.
@@ -270,25 +373,34 @@ terms (`error_interval > 0`); `clone()` forks the RNG for parallel sequences.
 ```python
 from floodadapt_abm import SEURule, ThresholdRule, CouplingConfig
 cfg = CouplingConfig()
-seu = SEURule(cfg.decision, rng=None)
-legacy = ThresholdRule(cfg.decision, damage_threshold=0.3)
+seu = SEURule(cfg.decision, rng=None)          # reference port
+legacy = ThresholdRule(cfg.decision, damage_threshold=0.3)   # baseline
 ```
 
 ---
 
 ## 6. Stochastic events — `event_utils.py`
 
-The **single** stochastic event generator (consolidated out of the example scripts in
-Phase 2).
+The **single** stochastic event generator.
 
-- `draw_year_events(event_names, event_freqs, rng, max_events_per_year=None, dt=1.0)`
-  — draw the events occurring in one year. Each event is an independent Bernoulli
-  trial with `p = 1 - exp(-freq·dt)`. When the draw exceeds the cap, events are
-  selected **at random without replacement** from the drawn pool (preserves the
-  Monte-Carlo distribution — the agreed policy that supersedes the old
-  highest-frequency / highest-magnitude heuristics).
-- `generate_event_sequences(event_names, event_freqs, n_seq, n_years, rng,
-  max_events_per_year=None, dt=1.0)` — `n_seq` independent per-year event sequences.
+- `draw_year_events(event_names, event_freqs, rng, max_events_per_year=None, dt=1.0,
+  mode="poisson", cap_policy="largest_damage", event_severity=None)` — draw the event
+  occurrences of one year.
+  - `mode="poisson"` (default): each event occurs `n ~ Poisson(freq·dt)` times —
+    statistically exact for occurrence rates; the returned list may contain the same
+    event more than once, and realised damages sum per occurrence.  In plain
+    language: the Poisson distribution answers "how many times does something with
+    a known average rate happen this year", so every event keeps its true long-run
+    rate (rare extremes included), sub-annual events can occur several times a
+    year, and nothing is clipped or discarded.
+  - `mode="bernoulli_clip"` (legacy): one Bernoulli trial per event with
+    `p = min(freq·dt, 1)` — rates above `1/dt` are clipped to certainty (the defect
+    identified in the 2026-07 review; retained bit-exactly for `legacy()`).
+  - When a cap binds, `cap_policy="largest_damage"` keeps the most damaging
+    occurrences deterministically (requires `event_severity`); `"random"` is the
+    legacy uniform discard.
+- `generate_event_sequences(...)` — `n_seq` independent per-year event sequences
+  (same parameters).
 
 ```python
 import numpy as np
@@ -334,7 +446,7 @@ result = engine.run([0.0, 0.1, 0.2, 0.3], no_seq=200, seed=7, n_jobs=4, track_eu
 
 ---
 
-## 8. Live parity rule — `dynamo_live_rule.py` (Phase 4a)
+## 8. Preferred rule — `dynamo_live_rule.py`  *(status: preferred)*
 
 A `DecisionRule` that delegates the decision math to the **native** DYNAMO-M
 `DecisionModule` — the live parity oracle proving the ported `SEURule` matches upstream
@@ -353,7 +465,7 @@ requires it. Set `DYNAMO_M_PATH` (e.g. `c:\repos\DYNAMO-M\DYNAMO-M`) to enable.
 
 ---
 
-## 9. Mesa-native scaffold — `mesa_native.py` (Phase 4b)
+## 9. Verification mirror — `mesa_native.py`  *(status: verification)*
 
 A **framework-free** mirror of DYNAMO-M's `SLRModel.step()` tick loop that inverts
 *who owns time*: instead of `engine.run` looping years, a small model advances one tick
@@ -371,7 +483,7 @@ at a time — while still delegating all numerics to `engine.step`.
 
 ---
 
-## 10. Native-class integration — `mesa_native_full.py` (Phase 4b-full)
+## 10. Preferred driver — `mesa_native_full.py`  *(status: preferred)*
 
 The **final integration step**: binds the **real honeybees `Model`** as the
 time-owning base class (as the upstream `SLRModel` does) and routes decisions through
@@ -519,9 +631,9 @@ dmg_unit='$', slr_unit='feet', damage_dtype=np.int32)`. Notable methods:
 examples_engine/         numbered runnable learning path (01 … 07) + README
   01_...                  engine basics
   ...
-  06_mesa_native_driving.py    Phase 4b scaffold demo
-  07_mesa_native_full.py       Phase 4b-full native-class demo (+ inline bit-parity)
-tests/                   full pytest suite (147 tests; self-contained mock datasets)
+  06_mesa_native_driving.py    verification-mirror demo
+  07_mesa_native_full.py       preferred-path demo (+ inline bit-parity)
+tests/                   full pytest suite (219 tests; self-contained mock datasets)
   test_mesa_native_full.py     22 tests: triple bit-parity, honeybees clock,
                                object graph/adapter, staleness guard, native path
 verification/            vendored, portable batteries emitting md/JSON/figures
@@ -537,7 +649,7 @@ Run everything (set `DYNAMO_M_PATH` to enable the native-parity tests):
 
 ```powershell
 $env:DYNAMO_M_PATH = "c:\repos\DYNAMO-M\DYNAMO-M"
-pytest -q            # 147 passed
+pytest -q            # 219 passed
 ```
 
 Guarded tests skip cleanly when honeybees or DYNAMO-M is unavailable.
@@ -549,10 +661,13 @@ Guarded tests skip cleanly when honeybees or DYNAMO-M is unavailable.
 - **Residential-only MVP:** only buildings whose `primary_object_type` contains `RES`
   are simulated (substring match, case-sensitive).
 - **Two strategies:** `no_measures` (baseline) and `floodproof_all_0` (dry-floodproof).
-- **RP-based EventSet:** frequencies come from a return-period EventSet; Bernoulli
-  per-event occurrence with `p = 1 - exp(-freq·dt)`.
-- **Event cap policy:** at most `max_events_per_year`; surplus events chosen **at
-  random without replacement** from the drawn pool.
+- **RP-based EventSet:** frequencies are annual occurrence rates from a return-period
+  EventSet. The hazard draw is Poisson by default (`event_draw_mode`); the SEU
+  integral consumes exceedance probabilities `p = 1 − e^(−freq)` (`seu_prob_mode`).
+  Sub-annual (`freq > 1`) events should be dropped via `nuisance_freq_threshold=1.0`.
+- **Event cap policy:** disabled by default (`max_events_per_year=None`); when set,
+  surplus occurrences are discarded by `cap_policy` (`"largest_damage"` default,
+  `"random"` legacy).
 - **Irreversible within-year adaptation:** an agent adapts at most once; adaptations
   age via `time_adapted` and **expire at `lifespan_dryproof`** (default 75 y), after
   which the agent un-adapts and re-decides.
@@ -568,5 +683,148 @@ Guarded tests skip cleanly when honeybees or DYNAMO-M is unavailable.
 
 *Reference for the `floodadapt_abm` package. For design rationale, the SEU
 mathematics, diagrams and the phase history, see
-[`docs/architecture.md`](docs/architecture.md). Revised 2026-07-09; reflects the
-delivered Phase 4b-full and the 147-test suite.*
+[`docs/architecture.md`](docs/architecture.md). Revised 2026-08-06; reflects the
+delivered insurance extension and the 219-test suite.*
+
+
+---
+
+## 2026-07 review additions (summary)
+
+Full rationale: `docs/architecture.md` (event-drawing section and Appendix B); the review response itself is a project deliverable kept outside the repository.
+
+### Three-way decision contract
+
+`DecisionRule.decide(agent_state, damages_this_year, damages_no_adapt,
+damages_adapt, event_freqs, max_pot_dmg, adaptation_costs,
+insurance_premium=None) -> np.ndarray[int8]` returns one action code per agent:
+`ACTION_DO_NOTHING` (0), `ACTION_ADAPT` (1), `ACTION_INSURE` (2).  The base-class
+default delegates to `should_adapt` and never insures, so existing two-way rules
+(including third-party subclasses) work unchanged.  `SEURule` and `DynamoLiveRule`
+implement the native three-way comparison (`adapt = EU_a > EU_dn and EU_a ≥ EU_i`;
+`insure = EU_i > EU_dn and EU_i > EU_a`; both restricted to non-adapted agents).
+The `event_freqs` parameter receives the engine's `p_floods_seu` (converted per
+`seu_prob_mode`); its name is retained for backward compatibility.
+
+### Insurance results (only present when `include_insurance=True`)
+
+| Key | Shape | Meaning |
+|---|---|---|
+| `insured_history` | `(no_seq, n_agents, n_years)` bool | insured status per year |
+| `out_of_pocket_history` | same, damage dtype | damages after the deductible for insured agents |
+| `premium_history` | `(no_seq, n_years)` | **mean** premium offered that year (equals the flat rate under community pricing) |
+| `premium_paid_history` | `(no_seq, n_agents, n_years)` | premium actually paid per household (0 when uninsured) |
+| `insured_fraction` | `(no_seq, n_years)` | share of households insured |
+
+`damage_history` always stays **gross**.  Coverage timing: a policy decided in
+year *t* covers year *t+1*; year 0 starts uninsured.  Insurance is annual and
+never coexists with physical floodproofing.
+
+Premiums are re-derived every year from the expected annual damage at that
+year's SLR (`SimulationEngine._compute_premium_offer`).  Note the native
+community rate charges the full mean EAD while covering only
+`1 - deductible` of each loss (an implicit ~11 % loading); the `risk_based`
+mode prices the cover actually sold, `(1 - deductible) * EAD_i`.
+
+### Per-agent state additions
+
+`AgentState.last_flood_severity` (float32; severity of the most recent significant
+flood, drives the severity-scaled perception peak) and `AgentState.is_insured`
+(bool).  The `CoastalNodeArrays.adapt` field uses the native encoding
+`0/1/2 = nothing/floodproofed/insured`.
+
+### Income utilities
+
+The synthetic income model takes **two independent inputs**, and they need
+different data.  Calibrate them separately:
+
+| Axis | What it fixes | Set by | Needs building locations? |
+|---|---|---|---|
+| **Marginal distribution** | how much a household at percentile *p* earns | `DecisionConfig.median_income`, `mean_median_inc_ratio` | **No** |
+| **Rank assignment** | which building sits at percentile *p* | `SimulationEngine(..., income_percentile_per_agent=...)` | **Yes**, unless a proxy is assumed |
+
+The percentile helpers below address the second axis only.  The first is a
+property of the study area as a whole and is measurable from published county
+totals even when the lookup table carries no geometry, so it is worth
+calibrating at every tier.
+
+#### Rank assignment (per-agent percentiles)
+
+`derive_income_percentiles(buildings_gdf, regions_gdf, income_column)`
+spatially joins building footprints to (e.g. ACS block-group) income regions and
+converts each building's regional income to its empirical percentile (±5-percentile
+jitter within a region).  Save as `income_percentiles_<site>.npy` and pass via
+`SimulationEngine(..., income_percentile_per_agent=...)`.
+
+**The building footprints are a hard requirement.**  The lookup `.nc` carries
+only `max_pot_dmg` and `primary_object_type` on its `object_id` axis, so
+nothing in the table says where a building is.  The geometry must come from the
+FloodAdapt database that produced the table
+(`fa.get_building_footprint_impacts(scenario)`, needs the `[pipeline]` extra).
+Without it, ACS income data alone cannot be linked to agents and the value
+proxy below is the only option.
+
+When the lookup table carries no building locations (the shipped `.nc` schema
+does not), `percentiles_from_value_proxy(values, rank_correlation=0.5, seed=0)`
+derives percentiles from the building value (`max_pot_dmg`) through a *noisy*
+rank link (Gaussian copula): the percentile tends to follow the building-value
+rank with target Spearman correlation `rank_correlation` (income and housing
+value correlate at roughly 0.4–0.6 in household-finance data), without
+recreating the degenerate legacy `income ≡ value` identity.  `rho = 0` equals
+the uniform fallback; `rho = 1` is strictly monotone.  Numpy-only, dedicated
+RNG, an explicit assumption to be replaced by the spatial join when footprints
+are available.
+
+#### Marginal distribution (measure it, then check the shape)
+
+Four helpers calibrate and validate the regional income distribution.  They
+need no geometry, no geopandas and no new dependency (stdlib `urllib` plus
+scipy).  A free Census Data API key is read from `CENSUS_API_KEY`.
+
+| Function | Purpose |
+|---|---|
+| `fetch_acs_county_income(state_fips, county_fips, api_key=None, year=2023)` | Returns `median_income`, `mean_income`, `mean_median_ratio`, `n_households`. ACS publishes no mean, so it is computed as aggregate household income (B19025) over households (B11001); the median is B19013 |
+| `fetch_acs_income_brackets(state_fips, county_fips, ...)` | Observed household counts and shares across the 16 income brackets of ACS table B19001 |
+| `lognormal_bracket_shares(median_income, mean_median_ratio, edges=ACS_B19001_EDGES)` | Pure function: the bracket shares implied by the engine's own fit (`mu = ln(median)`, `sd = sqrt(2 ln(mean/median))`) |
+| `bracket_fit_distance(observed, predicted)` | Total-variation distance, readable as *the fraction of households placed in the wrong bracket* (0 is perfect) |
+
+`ACS_B19001_EDGES` and `ACS_B19001_LABELS` are the bracket edges and labels.
+
+Two numbers fit a lognormal, but they do not show that its **shape** is right;
+that is what the bracket comparison is for.  Worked example, Charleston County
+SC (`state:45 county:019`, ACS 2023 5-year), verified against the live API:
+
+```python
+from dataclasses import replace
+from floodadapt_abm.income_utils import (
+    bracket_fit_distance, fetch_acs_county_income,
+    fetch_acs_income_brackets, lognormal_bracket_shares,
+)
+
+stats = fetch_acs_county_income("45", "019")
+# median_income 84,320 | mean_income 126,878 | mean_median_ratio 1.5047
+
+observed = fetch_acs_income_brackets("45", "019")["shares"]
+bracket_fit_distance(observed, lognormal_bracket_shares(70_000, 1.15))    # 0.309
+bracket_fit_distance(observed, lognormal_bracket_shares(84_320, 1.5047))  # 0.071
+
+cfg = replace(config.decision,
+              median_income=stats["median_income"],
+              mean_median_inc_ratio=stats["mean_median_ratio"])
+```
+
+The package defaults (70,000, ratio 1.15) misplace about 31 % of Charleston
+households, chiefly by giving the county a thin upper tail where the real one
+is fat (2.4 % predicted above $200k against 15.9 % observed).  The measured
+pair misplaces about 7 %.  Because `sd = sqrt(2 ln(mean/median))`, the ratio
+and not the median controls dispersion: 1.15 to 1.5047 widens `sd` from 0.529
+to 0.904, which is what makes the affordability constraint bite realistically.
+
+The residual misfit is concentrated in the lowest brackets, where a lognormal
+cannot reproduce the spike of near-zero-income households.  That is a limit of
+the functional form (inherited from native DYNAMO-M), recorded rather than
+tuned away.
+
+Pin the measured values as constants in the run script or notebook so results
+reproduce offline, and re-fetch to check for drift rather than silently
+substituting new numbers.

@@ -2,30 +2,53 @@
 event_utils.py
 ==============
 Single source of truth for stochastic flood-event generation in the
-FloodAdapt-ABM x DYNAMO-M coupling (Phase 2 consolidation).
+FloodAdapt-ABM x DYNAMO-M coupling.
 
-Historically the Bernoulli event draw plus the ``max_events_per_year`` cap was
-duplicated in three places:
+Two draw modes are provided (selected via
+``DecisionConfig.event_draw_mode``):
 
-* ``ABMSimulator.generate_event_sequences`` (no cap),
-* ``example/run_coupled_example.py::_simulate_year_events`` (magnitude/random cap),
-* ``example/run_trace_manual_check.py`` (its own inline copy).
+``"poisson"`` (recommended)
+    Each event ``i`` occurs ``n_i ~ Poisson(freq_i * dt)`` times per year.
+    Event frequencies are occurrence *rates* (events/year), so the Poisson
+    distribution is the statistically exact model: the realised long-run
+    rate of every event — rare extremes and sub-annual ``freq > 1`` events
+    alike — equals its nominal frequency, and one event may occur several
+    times within a year.
 
-This module provides one vectorised implementation used by ``SimulationEngine``
-and re-exported for the example scripts, so the drawing semantics live in
-exactly one place.
+``"bernoulli_clip"`` (legacy)
+    One Bernoulli trial per event with ``p = min(freq_i * dt, 1)``.
+    Frequencies above ``1/dt`` are clipped to certainty, so sub-annual
+    events occur every single year and — combined with the
+    ``max_events_per_year`` cap — crowd out the rare extremes.  Retained
+    bit-exactly for reproducing historical results
+    (``CouplingConfig.legacy()``).
 
-Cap-selection
---------------------
-When the independent Bernoulli trials yield more than ``max_events_per_year``
-events in a single year, the surplus is resolved by **random selection without
-replacement** from the drawn pool.  This preserves the Monte-Carlo distribution
-of event magnitudes (it does not bias toward the most frequent or the most
-damaging events).  See ``coupling_config.DecisionConfig.max_events_per_year``.
+Cap policies
+------------
+When ``max_events_per_year`` binds, the surplus occurrences are discarded
+according to ``cap_policy``:
+
+* ``"largest_damage"`` — keep the most damaging occurrences (requires
+  ``event_severity``).  Deterministic: no extra RNG draw, so sequential
+  and parallel runs remain bit-identical, and extremes are never discarded
+  in favour of nuisance events.
+* ``"random"`` — legacy: uniform random selection without replacement.
+  Preserves the magnitude distribution *conditional on the drawn pool*
+  but biases the marginal occurrence rate of every event downwards.
+
+With the Poisson mode the cap is best left disabled
+(``max_events_per_year=None``): realised damage is already bounded by
+``max_pot_dmg`` per event, and any discard distorts the hazard statistics.
 """
 from __future__ import annotations
 
 import numpy as np
+
+#: Valid values for the ``mode`` argument of :func:`draw_year_events`.
+EVENT_DRAW_MODES: tuple[str, ...] = ("poisson", "bernoulli_clip")
+
+#: Valid values for the ``cap_policy`` argument of :func:`draw_year_events`.
+CAP_POLICIES: tuple[str, ...] = ("largest_damage", "random")
 
 
 def draw_year_events(
@@ -34,38 +57,48 @@ def draw_year_events(
     rng: np.random.Generator,
     max_events_per_year: int | None = None,
     dt: float = 1.0,
+    mode: str = "poisson",
+    cap_policy: str = "largest_damage",
+    event_severity: np.ndarray | None = None,
 ) -> list[str]:
     """
-    Draw the flood events that occur in a single simulation year.
-
-    Each event ``i`` occurs independently with probability
-    ``min(freq_i * dt, 1.0)`` (a Bernoulli trial).  If more than
-    ``max_events_per_year`` events are drawn, a random subset of exactly
-    ``max_events_per_year`` events is retained (random selection without
-    replacement).
+    Draw the flood-event occurrences for a single simulation year.
 
     Parameters
     ----------
     event_names : np.ndarray
         1-D array of event names (any dtype convertible to ``str``).
     event_freqs : np.ndarray
-        1-D array of annual exceedance frequencies (events/year), aligned with
-        ``event_names``.
+        1-D array of annual occurrence frequencies (events/year), aligned
+        with ``event_names``.
     rng : np.random.Generator
-        Seeded generator, used for both the Bernoulli trials and the cap
-        subsampling so runs are reproducible.
+        Seeded generator, used for the stochastic draw (and, under
+        ``cap_policy="random"``, the cap subsampling) so runs are
+        reproducible.
     max_events_per_year : int or None
-        Maximum number of events retained per year.  ``None`` (default)
-        disables the cap.
+        Maximum number of occurrences retained per year.  ``None``
+        (default) disables the cap.
     dt : float
         Timestep length in years used to convert per-year frequencies into
-        per-step occurrence probabilities.  Default ``1.0``.
+        per-step rates/probabilities.  Default ``1.0``.
+    mode : str
+        ``"poisson"`` or ``"bernoulli_clip"`` (see module docstring).
+        Default ``"poisson"``.
+    cap_policy : str
+        ``"largest_damage"`` or ``"random"`` (see module docstring).
+        Default ``"largest_damage"``.
+    event_severity : np.ndarray or None
+        1-D array (aligned with ``event_names``) ranking events by damage
+        (e.g. community gross damage at the current SLR).  Required when
+        the cap binds under ``cap_policy="largest_damage"``.
 
     Returns
     -------
     occurred_events : list[str]
-        Names of the events that occurred this year, in dataset order (the cap
-        subsample is returned sorted by original index for determinism).
+        Names of the event occurrences this year, in dataset order.  Under
+        ``mode="poisson"`` the list may contain the same name more than
+        once (multiple occurrences of one event within a year); realised
+        damages are summed per occurrence downstream.
     """
     names = np.asarray(event_names)
     freqs = np.asarray(event_freqs, dtype=np.float64)
@@ -74,18 +107,94 @@ def draw_year_events(
             f"event_names ({names.shape[0]}) and event_freqs "
             f"({freqs.shape[0]}) must have the same length."
         )
+    if mode not in EVENT_DRAW_MODES:
+        raise ValueError(
+            f"Unknown event draw mode {mode!r}; expected one of {EVENT_DRAW_MODES}."
+        )
+    if cap_policy not in CAP_POLICIES:
+        raise ValueError(
+            f"Unknown cap policy {cap_policy!r}; expected one of {CAP_POLICIES}."
+        )
 
-    probs = np.clip(freqs * dt, 0.0, 1.0)
-    occurred_mask = rng.random(probs.shape[0]) < probs
-    occurred_idx = np.flatnonzero(occurred_mask)
+    if mode == "bernoulli_clip":
+        # LEGACY branch — byte-identical RNG call order (rng.random ->
+        # rng.choice -> np.sort); the golden regression test
+        # (tests/test_legacy_mode.py) depends on this exact stream.
+        probs = np.clip(freqs * dt, 0.0, 1.0)
+        occurred_mask = rng.random(probs.shape[0]) < probs
+        occurred_idx = np.flatnonzero(occurred_mask)
+
+        if max_events_per_year is not None and occurred_idx.size > max_events_per_year:
+            if cap_policy == "random":
+                chosen = rng.choice(
+                    occurred_idx, size=int(max_events_per_year), replace=False
+                )
+                occurred_idx = np.sort(chosen)
+            else:
+                occurred_idx = _cap_by_severity(
+                    occurred_idx, int(max_events_per_year), event_severity
+                )
+        return [str(names[i]) for i in occurred_idx]
+
+    # -- Poisson branch ----------------------------------------------------
+    counts = rng.poisson(freqs * dt)
+    # Expand to one entry per occurrence; np.repeat keeps ascending event
+    # order, and duplicates encode multiple occurrences of the same event.
+    occurred_idx = np.repeat(np.arange(freqs.shape[0]), counts)
 
     if max_events_per_year is not None and occurred_idx.size > max_events_per_year:
-        chosen = rng.choice(
-            occurred_idx, size=int(max_events_per_year), replace=False
-        )
-        occurred_idx = np.sort(chosen)
+        if cap_policy == "largest_damage":
+            occurred_idx = _cap_by_severity(
+                occurred_idx, int(max_events_per_year), event_severity
+            )
+        else:
+            pos = rng.choice(
+                occurred_idx.size, size=int(max_events_per_year), replace=False
+            )
+            occurred_idx = np.sort(occurred_idx[pos])
 
     return [str(names[i]) for i in occurred_idx]
+
+
+def _cap_by_severity(
+    occurred_idx: np.ndarray,
+    cap: int,
+    event_severity: np.ndarray | None,
+) -> np.ndarray:
+    """
+    Retain the ``cap`` most damaging occurrences, deterministically.
+
+    Ranking is by descending ``event_severity`` with ties broken by
+    ascending event index (stable, no RNG involved — sequential and
+    parallel executions therefore agree bit-for-bit).  The retained
+    occurrences are returned sorted ascending (dataset order).
+
+    Parameters
+    ----------
+    occurred_idx : np.ndarray[int]
+        Drawn occurrence indices into the event catalogue (may contain
+        duplicates under the Poisson mode).
+    cap : int
+        Number of occurrences to keep.
+    event_severity : np.ndarray or None
+        Per-event damage ranking key; must be provided when this policy is
+        invoked.
+
+    Returns
+    -------
+    kept_idx : np.ndarray[int]
+        The retained occurrence indices, sorted ascending.
+    """
+    if event_severity is None:
+        raise ValueError(
+            "cap_policy='largest_damage' requires event_severity when the "
+            "max_events_per_year cap binds."
+        )
+    severity = np.asarray(event_severity, dtype=np.float64)[occurred_idx]
+    # np.lexsort: LAST key is the primary sort key -> order by descending
+    # severity, ties by ascending event index.
+    order = np.lexsort((occurred_idx, -severity))
+    return np.sort(occurred_idx[order[:cap]])
 
 
 def generate_event_sequences(
@@ -96,6 +205,9 @@ def generate_event_sequences(
     rng: np.random.Generator,
     max_events_per_year: int | None = None,
     dt: float = 1.0,
+    mode: str = "poisson",
+    cap_policy: str = "largest_damage",
+    event_severity: np.ndarray | None = None,
 ) -> list[list[list[str]]]:
     """
     Generate ``n_seq`` independent Monte-Carlo event sequences.
@@ -118,6 +230,10 @@ def generate_event_sequences(
         Per-year cap (see :func:`draw_year_events`).
     dt : float
         Timestep length in years.
+    mode, cap_policy : str
+        Draw mode and cap policy (see :func:`draw_year_events`).
+    event_severity : np.ndarray or None
+        Per-event damage ranking key for ``cap_policy="largest_damage"``.
 
     Returns
     -------
@@ -129,7 +245,14 @@ def generate_event_sequences(
     for _ in range(int(n_seq)):
         seq: list[list[str]] = [
             draw_year_events(
-                event_names, event_freqs, rng, max_events_per_year, dt
+                event_names,
+                event_freqs,
+                rng,
+                max_events_per_year,
+                dt,
+                mode=mode,
+                cap_policy=cap_policy,
+                event_severity=event_severity,
             )
             for _ in range(int(n_years))
         ]

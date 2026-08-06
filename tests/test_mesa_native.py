@@ -160,12 +160,11 @@ class TestLiveRuleUnderMesaNative:
 
 
 # ---------------------------------------------------------------------------
-# PRE.3 (2026-07-09 review): shared-engine staleness guard.
+# Shared-engine staleness guard.
 # ---------------------------------------------------------------------------
 class TestSharedEngineStalenessGuard:
     """Constructing a second model on the same engine must not let the first
-    model silently mutate the second model's state (mesa_native.py review
-    finding, task PRE.3)."""
+    model silently mutate the second model's state."""
 
     def test_stale_model_step_raises(self):
         engine = _engine()

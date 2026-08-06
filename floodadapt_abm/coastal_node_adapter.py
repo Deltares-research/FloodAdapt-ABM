@@ -72,7 +72,10 @@ class CoastalNodeArrays:
     p_floods : np.ndarray[float64], shape (n_events,)
         Exceedance probabilities (= event frequencies = 1/RP).
     adapt : np.ndarray[int8]
-        Adaptation status per household (native stores 0/1 ints).
+        Adaptation status per household, using the **native encoding**
+        (``coastal_nodes.py``): ``0`` = no action, ``1`` = dry-floodproofed,
+        ``2`` = insured.  ``2`` only occurs when ``include_insurance`` is
+        enabled.
     time_adapt : np.ndarray[int32]
         Adaptation age per household (drives the lifespan-dryproof reset).
     slr_value : float
@@ -137,7 +140,12 @@ class LookupTableAdapter:
             damages_coastal_cells=np.ascontiguousarray(d_no.T),
             damages_coastal_cells_adapt=np.ascontiguousarray(d_fp.T),
             p_floods=np.asarray(eng._event_freqs, dtype=np.float64).copy(),
-            adapt=state.is_adapted.astype(np.int8),
+            # Native encoding: 0 = nothing, 1 = floodproofed, 2 = insured
+            # (insured is always all-False while include_insurance is off,
+            # so the legacy 0/1 encoding is preserved bit-exactly there).
+            adapt=np.where(
+                state.is_insured, np.int8(2), state.is_adapted.astype(np.int8)
+            ),
             time_adapt=state.time_adapted.copy(),
             slr_value=float(slr_value),
         )
@@ -162,7 +170,9 @@ class LookupTableAdapter:
             )
         if not np.array_equal(node.object_ids, np.asarray(eng.object_ids)):
             raise ValueError("node.object_ids order does not match engine.object_ids")
-        eng.state.is_adapted[:] = node.adapt.astype(bool)
+        # Decode the native encoding: 1 = floodproofed, 2 = insured.
+        eng.state.is_adapted[:] = node.adapt == 1
+        eng.state.is_insured[:] = node.adapt == 2
         eng.state.time_adapted[:] = node.time_adapt
 
 
@@ -193,17 +203,24 @@ def round_trip_check(engine: SimulationEngine, slr_value: float,
         "damages_adapt_identical": bool(np.array_equal(node.damages_coastal_cells_adapt.T, d_fp)),
         "p_floods_identical": bool(np.array_equal(node.p_floods, engine._event_freqs)),
         "adapt_matches_state": bool(
-            np.array_equal(node.adapt.astype(bool), engine.state.is_adapted)
+            np.array_equal(node.adapt == 1, engine.state.is_adapted)
+        ),
+        "insured_matches_state": bool(
+            np.array_equal(node.adapt == 2, engine.state.is_insured)
         ),
     }
 
-    # reverse direction: mutate on the node side, write back, compare exactly
+    # reverse direction: mutate on the node side (using the full native
+    # 0/1/2 encoding), write back, compare exactly
     rng = np.random.default_rng(0)
-    node.adapt = (rng.random(node.n) < 0.5).astype(np.int8)
+    node.adapt = rng.integers(0, 3, node.n).astype(np.int8)
     node.time_adapt = rng.integers(0, 40, node.n).astype(np.int32)
     adapter.write_back(node)
     checks["write_back_adapt_identical"] = bool(
-        np.array_equal(engine.state.is_adapted, node.adapt.astype(bool))
+        np.array_equal(engine.state.is_adapted, node.adapt == 1)
+    )
+    checks["write_back_insured_identical"] = bool(
+        np.array_equal(engine.state.is_insured, node.adapt == 2)
     )
     checks["write_back_time_adapt_identical"] = bool(
         np.array_equal(engine.state.time_adapted, node.time_adapt)

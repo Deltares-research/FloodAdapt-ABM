@@ -4,22 +4,71 @@ floodadapt_abm
 FloodAdapt-ABM: agent-based flood adaptation simulation coupled with
 the DYNAMO-M Subjective Expected Utility decision framework.
 
-Public API
-----------
-SimulationEngine (recommended)
-    Unified simulation engine with pluggable decision rules
-    (Strategy Pattern).  Owns time, data plumbing, event generation, and
-    lifespan-dryproof reset logic.  Use this for new code.
-ABMSimulator
-    **Deprecated** legacy threshold-rule simulator (stage-2 pipeline),
-    retained for backward compatibility and the Gate-1 regression test.
-    New code should use ``SimulationEngine`` + ``ThresholdRule`` instead.
-DecisionRule / ThresholdRule / SEURule
-    Pluggable decision rules for ``SimulationEngine``.
+The preferred path
+------------------
+**The recommended way to run a simulation is the fully native coupling**:
+``run_mesa_native_full`` (a real honeybees ``Model`` owns the clock) driving
+``DynamoLiveRule`` (the native DYNAMO-M ``DecisionModule`` decides both
+floodproofing and insurance)::
+
+    from floodadapt_abm import (
+        SimulationEngine, CouplingConfig, preferred_decision_rule,
+        run_mesa_native_full,
+    )
+
+    config = CouplingConfig()
+    engine = SimulationEngine(ds=ds, config=config)
+    engine.decision_rule = preferred_decision_rule(config.decision)
+    results = run_mesa_native_full(engine, slr_values, no_seq=5, seed=42)
+
+``preferred_decision_rule`` returns ``DynamoLiveRule`` when DYNAMO-M is
+installed, and otherwise falls back to the parity-gated ``SEURule`` port, whose
+results are interchangeable (relative EU error < 1e-4, identical actions).
+Any future DYNAMO-M coupling (migration, the government agent) should arrive
+through the same seam and inherit the same preference.
+
+Everything else is a comparison baseline or a verification path.
+
+Public API — roles at a glance
+------------------------------
+Decision rules (``rule.STATUS`` carries the tag):
+
+==========================  ==============  ==================================
+Symbol                      ``STATUS``      Role
+==========================  ==============  ==================================
+``DynamoLiveRule``          preferred       Native DYNAMO-M decisions
+                                            (floodproofing + insurance)
+``SEURule``                 reference       Parity-gated NumPy port; fallback,
+                                            and required for ``n_jobs>1``
+``ThresholdRule``           experiment      Legacy damage-threshold baseline
+==========================  ==============  ==================================
+
+Drivers (which object owns the clock):
+
+==============================  ==============  ==============================
+Symbol                          Status          Role
+==============================  ==============  ==============================
+``run_mesa_native_full`` /      preferred       Real honeybees ``Model`` owns
+``FloodAdaptSLRModelFull``                      the clock.  Application runs.
+``SimulationEngine``            kernel          The single numeric kernel every
+                                                driver delegates to, plus the
+                                                parallel Monte-Carlo backend
+                                                ``run(n_jobs=...)`` used for
+                                                experiments and sweeps.
+``run_mesa_native`` /           verification    Framework-free mirror of the
+``FloodAdaptSLRModel``                          tick loop; bit-parity gate.
+``ABMSimulator``                deprecated      Legacy simulator, backward
+                                                compatibility only.
+==============================  ==============  ==============================
+
+All three drivers delegate every numeric operation to ``SimulationEngine.step``
+with the same RNG stream, and are gated to agree bit-for-bit.
+
 AgentState
     Per-agent state container for the engine.
 CouplingConfig / DecisionConfig / NetCDFMappingConfig
-    Configuration dataclasses.
+    Configuration dataclasses.  ``CouplingConfig.legacy()`` reproduces the
+    pre-2026-07 behaviour bit-exactly (verification harnesses pin it).
 
 Note on setup_lookup_table
 --------------------------
@@ -44,20 +93,34 @@ from floodadapt_abm.coupling_config import (
     NetCDFMappingConfig,
 )
 from floodadapt_abm.agent_state import AgentState
-from floodadapt_abm.decision_rule import DecisionRule, ThresholdRule, SEURule
+from floodadapt_abm.decision_rule import (
+    ACTION_ADAPT,
+    ACTION_DO_NOTHING,
+    ACTION_INSURE,
+    STATUS_DEPRECATED,
+    STATUS_EXPERIMENT,
+    STATUS_PREFERRED,
+    STATUS_REFERENCE,
+    STATUS_VERIFICATION,
+    DecisionRule,
+    SEURule,
+    ThresholdRule,
+)
 from floodadapt_abm.simulation_engine import SimulationEngine
 from floodadapt_abm.event_utils import draw_year_events, generate_event_sequences
 
 # For backward compat: DynamoDecisionBridge moved to _core, but re-export here
 from floodadapt_abm._core import DynamoDecisionBridge
 
-# Phase 4a: live DYNAMO-M parity rule. Import is guarded so the package still
-# works when DYNAMO-M is not installed/importable (DYNAMO_M_AVAILABLE is False,
-# and constructing DynamoLiveRule then raises DynamoMNotAvailable).
+# PREFERRED decision rule: the live coupling to native DYNAMO-M. Import is
+# guarded so the package still works when DYNAMO-M is not installed/importable
+# (DYNAMO_M_AVAILABLE is False, and constructing DynamoLiveRule then raises
+# DynamoMNotAvailable). preferred_decision_rule() applies the fallback policy.
 from floodadapt_abm.dynamo_live_rule import (
     DynamoLiveRule,
     DynamoMNotAvailable,
     DYNAMO_M_AVAILABLE,
+    preferred_decision_rule,
 )
 
 # Phase 4b: Mesa-native driving (time-ownership inversion). Framework-free
@@ -69,11 +132,11 @@ from floodadapt_abm.mesa_native import (
     run_mesa_native,
 )
 
-# Phase 4b-full: native-class integration. Subclasses the real honeybees Model
-# (owns time) and routes decisions through the native DYNAMO-M DecisionModule
-# via DynamoLiveRule, feeding a deterministic node population from the FloodAdapt
-# lookup table through the PRE.4 adapter. Guarded so the package imports even
-# when honeybees is absent (HONEYBEES_AVAILABLE is False; construction raises).
+# MAIN ENGINE (Phase 4b-full, native-class integration): subclasses the real
+# honeybees Model (owns time); decisions can route through the native DYNAMO-M
+# DecisionModule via DynamoLiveRule. honeybees is a core dependency; the import
+# guard is retained defensively (HONEYBEES_AVAILABLE False -> construction
+# raises HoneybeesNotAvailable with an actionable message).
 from floodadapt_abm.mesa_native_full import (
     FloodAdaptSLRModelFull,
     AgentsFull,
@@ -89,9 +152,18 @@ __all__ = [
     "DecisionRule",
     "ThresholdRule",
     "SEURule",
+    "ACTION_DO_NOTHING",
+    "ACTION_ADAPT",
+    "ACTION_INSURE",
+    "STATUS_PREFERRED",
+    "STATUS_REFERENCE",
+    "STATUS_EXPERIMENT",
+    "STATUS_VERIFICATION",
+    "STATUS_DEPRECATED",
     "DynamoLiveRule",
     "DynamoMNotAvailable",
     "DYNAMO_M_AVAILABLE",
+    "preferred_decision_rule",
     "FloodAdaptSLRModel",
     "MesaAgents",
     "CoastalNodePopulation",

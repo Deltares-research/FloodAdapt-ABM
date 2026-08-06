@@ -124,6 +124,7 @@ def main() -> None:
         "results are bit-for-bit identical to engine.run(). The DecisionRule +\n"
         "lookup-table adapter seams made binding the real framework non-breaking."
     )
+    print("\nDone. Next: 08_income_perception_insurance.py")
 
 
 if __name__ == "__main__":
