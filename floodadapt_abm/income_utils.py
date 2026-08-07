@@ -426,7 +426,7 @@ def fetch_acs_county_income(
     state_fips: str,
     county_fips: str,
     api_key: str | None = None,
-    year: int = 2023,
+    year: int = 2024,
     timeout: float = 120.0,
 ) -> dict[str, float]:
     """
@@ -464,7 +464,8 @@ def fetch_acs_county_income(
     api_key : str or None
         Census Data API key; falls back to ``CENSUS_API_KEY``.
     year : int
-        ACS 5-year vintage (the final year of the five). Default ``2023``.
+        ACS 5-year vintage (the final year of the five). Default ``2024``,
+        i.e. the 2020-2024 release, which is the latest published.
     timeout : float
         Socket timeout in seconds. Default ``120.0``.
 
@@ -505,7 +506,7 @@ def fetch_acs_income_brackets(
     state_fips: str,
     county_fips: str,
     api_key: str | None = None,
-    year: int = 2023,
+    year: int = 2024,
     timeout: float = 120.0,
 ) -> dict[str, np.ndarray]:
     """
@@ -525,7 +526,8 @@ def fetch_acs_income_brackets(
     api_key : str or None
         Census Data API key; falls back to ``CENSUS_API_KEY``.
     year : int
-        ACS 5-year vintage. Default ``2023``.
+        ACS 5-year vintage. Default ``2024`` (the 2020-2024 release).
+        Must match the vintage used to fit the marginal being validated.
     timeout : float
         Socket timeout in seconds. Default ``120.0``.
 

@@ -586,6 +586,16 @@ The SLR→damage interpolation kernel:
   (residential) damage cube for one strategy **once**.
 - `interpolate_cube_at_slr(values, slr_arr, slr_target, method='linear',
   max_pot_dmg=None)` — interpolate a pre-materialized cube along the SLR axis.
+- `_linear_at_slr(values, slr_arr, slr_target)`: internal, the `linear` branch.
+  A dtype-pinned linear interpolation that replaces SciPy's legacy `interp1d`.
+  The cube is `float32` and the SLR grid `float64`, and SciPy's internal
+  promotion of that mix is not stable across SciPy builds or NumPy promotion
+  regimes, which flipped stored damages by one ulp and broke the bit-parity
+  gates on some platforms. This helper takes the y-difference at `float32` (the
+  historical semantics the golden arrays encode) and runs the division and
+  affine step at `float64`, so results are identical on every platform. Do not
+  route the `linear` branch back through SciPy; `tests/test_lookup_interpolation.py`
+  asserts it imports none. `cubic` still uses SciPy and carries no parity gate.
 - `interpolate_damage_at_slr(ds, strategy, slr_target, ...)` — single-shot convenience.
 - `interpolate_damage_matrix(ds, strategy, slr_values, event_names_list, ...)` — batch
   over SLR values and an event subset.
@@ -781,9 +791,19 @@ Four helpers calibrate and validate the regional income distribution.  They
 need no geometry, no geopandas and no new dependency (stdlib `urllib` plus
 scipy).  A free Census Data API key is read from `CENSUS_API_KEY`.
 
+Calibration fits exactly two parameters (`median_income`,
+`mean_median_inc_ratio`, which map to the lognormal's `mu`/`sd`) from two
+independent published numbers (B19013 median; B19025/B11001 mean), so the
+fit is exact by construction, not an optimisation.  Validation does not
+split rows: ACS never publishes individual responses, only aggregate
+tabulations.  It checks the fit against a *different* published table of
+the same population, B19001's 16-bracket histogram, which the fit never
+touches.  See `docs/calibration_validation_guide.md` for the full
+mechanics.
+
 | Function | Purpose |
 |---|---|
-| `fetch_acs_county_income(state_fips, county_fips, api_key=None, year=2023)` | Returns `median_income`, `mean_income`, `mean_median_ratio`, `n_households`. ACS publishes no mean, so it is computed as aggregate household income (B19025) over households (B11001); the median is B19013 |
+| `fetch_acs_county_income(state_fips, county_fips, api_key=None, year=2024)` | Returns `median_income`, `mean_income`, `mean_median_ratio`, `n_households`. ACS publishes no mean, so it is computed as aggregate household income (B19025) over households (B11001); the median is B19013 |
 | `fetch_acs_income_brackets(state_fips, county_fips, ...)` | Observed household counts and shares across the 16 income brackets of ACS table B19001 |
 | `lognormal_bracket_shares(median_income, mean_median_ratio, edges=ACS_B19001_EDGES)` | Pure function: the bracket shares implied by the engine's own fit (`mu = ln(median)`, `sd = sqrt(2 ln(mean/median))`) |
 | `bracket_fit_distance(observed, predicted)` | Total-variation distance, readable as *the fraction of households placed in the wrong bracket* (0 is perfect) |
@@ -792,7 +812,7 @@ scipy).  A free Census Data API key is read from `CENSUS_API_KEY`.
 
 Two numbers fit a lognormal, but they do not show that its **shape** is right;
 that is what the bracket comparison is for.  Worked example, Charleston County
-SC (`state:45 county:019`, ACS 2023 5-year), verified against the live API:
+SC (`state:45 county:019`, ACS 2020-2024 5-year), verified against the live API:
 
 ```python
 from dataclasses import replace
@@ -801,24 +821,29 @@ from floodadapt_abm.income_utils import (
     fetch_acs_income_brackets, lognormal_bracket_shares,
 )
 
-stats = fetch_acs_county_income("45", "019")
-# median_income 84,320 | mean_income 126,878 | mean_median_ratio 1.5047
+stats = fetch_acs_county_income("45", "019")          # ACS 2020-2024 5-year
+# median_income 88,494 | mean_income 131,674 | mean_median_ratio 1.4879
 
 observed = fetch_acs_income_brackets("45", "019")["shares"]
-bracket_fit_distance(observed, lognormal_bracket_shares(70_000, 1.15))    # 0.309
-bracket_fit_distance(observed, lognormal_bracket_shares(84_320, 1.5047))  # 0.071
+bracket_fit_distance(observed, lognormal_bracket_shares(70_000, 1.15))    # 0.326
+bracket_fit_distance(observed, lognormal_bracket_shares(88_494, 1.4879))  # 0.072
 
 cfg = replace(config.decision,
               median_income=stats["median_income"],
               mean_median_inc_ratio=stats["mean_median_ratio"])
 ```
 
-The package defaults (70,000, ratio 1.15) misplace about 31 % of Charleston
+The package defaults (70,000, ratio 1.15) misplace about 33 % of Charleston
 households, chiefly by giving the county a thin upper tail where the real one
-is fat (2.4 % predicted above $200k against 15.9 % observed).  The measured
+is fat (2.4 % predicted above $200k against 17.2 % observed).  The measured
 pair misplaces about 7 %.  Because `sd = sqrt(2 ln(mean/median))`, the ratio
-and not the median controls dispersion: 1.15 to 1.5047 widens `sd` from 0.529
-to 0.904, which is what makes the affordability constraint bite realistically.
+and not the median controls dispersion: 1.15 to 1.4879 widens `sd` from 0.529
+to 0.892, which is what makes the affordability constraint bite realistically.
+
+The figures above are the ACS 2020-2024 5-year release, the latest published.
+`fetch_acs_county_income` and `fetch_acs_income_brackets` default to
+`year=2024`; pass `year=` explicitly to pin a vintage, and use the same
+vintage for the fit and for the B19001 validation.
 
 The residual misfit is concentrated in the lowest brackets, where a lognormal
 cannot reproduce the spike of near-zero-income households.  That is a limit of

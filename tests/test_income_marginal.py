@@ -24,10 +24,11 @@ from floodadapt_abm.income_utils import (
     lognormal_bracket_shares,
 )
 
-# Charleston County, SC, ACS 2023 5-year (verified against the live API).
-CHARLESTON_MEDIAN = 84_320.0
-CHARLESTON_AGGREGATE = 22_267_010_600.0
-CHARLESTON_HOUSEHOLDS = 175_499.0
+# Charleston County, SC, ACS 2020-2024 5-year (verified against the live API).
+CHARLESTON_MEDIAN = 88_494.0
+CHARLESTON_AGGREGATE = 23_566_353_400.0
+CHARLESTON_HOUSEHOLDS = 178_975.0
+CHARLESTON_RATIO = CHARLESTON_AGGREGATE / CHARLESTON_HOUSEHOLDS / CHARLESTON_MEDIAN
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +36,7 @@ CHARLESTON_HOUSEHOLDS = 175_499.0
 # ---------------------------------------------------------------------------
 def test_bracket_shares_are_a_probability_distribution():
     """Edges spanning [0, inf) must yield shares summing to exactly 1."""
-    shares = lognormal_bracket_shares(84_320.0, 1.5047)
+    shares = lognormal_bracket_shares(CHARLESTON_MEDIAN, CHARLESTON_RATIO)
     assert shares.shape == (len(ACS_B19001_EDGES) - 1,)
     assert shares.shape == (len(ACS_B19001_LABELS),)
     assert np.all(shares >= 0.0)
@@ -44,9 +45,9 @@ def test_bracket_shares_are_a_probability_distribution():
 
 def test_bracket_shares_split_at_the_median():
     """Half the mass must fall below the median, by definition."""
-    median = 84_320.0
+    median = CHARLESTON_MEDIAN
     shares = lognormal_bracket_shares(
-        median, 1.5047, edges=(0.0, median, float("inf"))
+        median, CHARLESTON_RATIO, edges=(0.0, median, float("inf"))
     )
     assert shares[0] == pytest.approx(0.5, abs=1e-9)
     assert shares[1] == pytest.approx(0.5, abs=1e-9)
@@ -59,8 +60,8 @@ def test_wider_ratio_puts_more_mass_in_both_tails():
     the ratio, not the median, controls dispersion.
     """
     edges = (0.0, 25_000.0, 200_000.0, float("inf"))
-    narrow = lognormal_bracket_shares(84_320.0, 1.15, edges=edges)
-    wide = lognormal_bracket_shares(84_320.0, 1.5047, edges=edges)
+    narrow = lognormal_bracket_shares(CHARLESTON_MEDIAN, 1.15, edges=edges)
+    wide = lognormal_bracket_shares(CHARLESTON_MEDIAN, CHARLESTON_RATIO, edges=edges)
     assert wide[0] > narrow[0]      # more poor households
     assert wide[2] > narrow[2]      # more rich households
     assert wide[1] < narrow[1]      # fewer in the middle
@@ -69,17 +70,17 @@ def test_wider_ratio_puts_more_mass_in_both_tails():
 def test_bracket_shares_reject_impossible_parameters():
     """A lognormal always has mean > median, so ratio <= 1 has no solution."""
     with pytest.raises(ValueError, match="mean_median_ratio"):
-        lognormal_bracket_shares(84_320.0, 1.0)
+        lognormal_bracket_shares(CHARLESTON_MEDIAN, 1.0)
     with pytest.raises(ValueError, match="mean_median_ratio"):
-        lognormal_bracket_shares(84_320.0, 0.8)
+        lognormal_bracket_shares(CHARLESTON_MEDIAN, 0.8)
     with pytest.raises(ValueError, match="median_income"):
         lognormal_bracket_shares(0.0, 1.5)
 
 
 def test_bracket_shares_are_deterministic():
     """No RNG anywhere: repeated calls must be bit-identical."""
-    a = lognormal_bracket_shares(84_320.0, 1.5047)
-    b = lognormal_bracket_shares(84_320.0, 1.5047)
+    a = lognormal_bracket_shares(CHARLESTON_MEDIAN, CHARLESTON_RATIO)
+    b = lognormal_bracket_shares(CHARLESTON_MEDIAN, CHARLESTON_RATIO)
     assert np.array_equal(a, b)
 
 
@@ -110,17 +111,17 @@ def test_fit_distance_rejects_shape_mismatch():
 def test_calibrated_charleston_beats_generic_defaults():
     """The substantive result: measured parameters fit far better.
 
-    Observed shares are the real ACS 2023 B19001 histogram for Charleston
-    County; the assertion pins the direction and rough magnitude of the
-    improvement, not the exact figure.
+    Observed shares are the real ACS 2020-2024 B19001 histogram for
+    Charleston County; the assertion pins the direction and rough magnitude
+    of the improvement, not the exact figure.
     """
     observed = np.array([
-        0.053, 0.026, 0.032, 0.031, 0.026, 0.031, 0.031, 0.035,
-        0.032, 0.070, 0.089, 0.115, 0.099, 0.080, 0.090, 0.159,
+        0.054, 0.027, 0.025, 0.032, 0.026, 0.029, 0.034, 0.031,
+        0.032, 0.065, 0.085, 0.113, 0.098, 0.082, 0.095, 0.172,
     ])
     observed = observed / observed.sum()
     generic = lognormal_bracket_shares(70_000.0, 1.15)
-    calibrated = lognormal_bracket_shares(CHARLESTON_MEDIAN, 1.5047)
+    calibrated = lognormal_bracket_shares(CHARLESTON_MEDIAN, CHARLESTON_RATIO)
 
     d_generic = bracket_fit_distance(observed, generic)
     d_calibrated = bracket_fit_distance(observed, calibrated)

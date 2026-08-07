@@ -389,6 +389,26 @@ optimisations carry the runtime:
 `ceil`; `cubic` needs at least four SLR points). It extrapolates outside the
 grid: extend the grid in stage 1 rather than relying on that.
 
+**The linear kernel is dtype-pinned, and deliberately does not use SciPy.**
+The damage cube is `float32` while the SLR grid is `float64`, so a mixed-dtype
+interpolation depends on *where* the promotion to `float64` happens. SciPy's
+legacy `interp1d` decides that internally, and that decision is an
+implementation detail of a deprecated API rather than a guaranteed contract:
+it can differ between SciPy builds and between NumPy promotion regimes
+(NEP 50). Interpolated damages routinely land within one `float32` unit in the
+last place of a rounding boundary, so such a difference flips stored damages by
+a single ulp. That is invisible scientifically but fatal to the bit-parity
+contract, and it produced golden-regression failures that reproduced on CI
+runners while passing on developer machines. `_linear_at_slr` therefore fixes
+every intermediate dtype explicitly: the y-difference is taken at the cube's
+own `float32` precision (which is what the golden arrays encode), and the
+division and affine step run in `float64`. The kernel then depends only on
+IEEE-754 add, subtract, multiply and divide, which are exactly rounded and so
+identical on every platform. `cubic` still delegates to SciPy, and is not
+covered by any bit-parity gate for that reason.
+`tests/test_lookup_interpolation.py` pins the contract, including a guard that
+the linear path imports no SciPy.
+
 ---
 
 # Part II. Model description (ODD protocol)

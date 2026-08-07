@@ -100,6 +100,29 @@ percentiles come from the value proxy. Ask this question of every
 parameter before tuning it: is it measurable from aggregate data, or does
 it genuinely require micro-data?
 
+**What "calibrating the marginal" actually means.** There are exactly two
+free parameters on this axis, `median_income` and `mean_median_inc_ratio`,
+which map to the lognormal's own parameters by `mu = ln(median_income)`,
+`sd = sqrt(2 ln(mean_median_inc_ratio))`. Fitting them is not an
+optimisation: there is no loss function and nothing is searched. Two
+parameters are matched to two independent published numbers.
+`median_income` is read straight off ACS table B19013, which already is a
+median. `mean_median_inc_ratio` is the mean, aggregate household income
+(B19025) divided by households (B11001), divided again by that same
+median. The fit is exact by construction, so there is no under- or
+over-fitting question at this step; `fetch_acs_county_income` performs the
+whole computation in one call. What the fit cannot tell you is whether a
+two-parameter lognormal is even the right *shape* for the county's real
+income distribution. That question needs data the fit never touched, which
+is what Tier 4's bracket check, below, answers.
+
+This is genuine calibration only on axis 1. The Tier A/B rank assignment
+(the spatial join) is calibrated too, to real per-region income. The Tier C
+fallback (`rank_correlation = 0.5`) is not: it is a literature value from
+household-finance studies on how income ranks correlate with housing-value
+ranks, used because no per-building income ground truth exists for
+Charleston to fit it to. Call Tier C "assumed", not "calibrated".
+
 Useful free sources for a US coastal study:
 
 - **OpenFEMA NFIP policies** (openfema data sets): flood-insurance
@@ -153,14 +176,29 @@ Validate on material not used for calibration:
 - **Check fitted shapes, not just fitted moments.** Two numbers pin a
   lognormal, but matching a median and a mean does not prove the
   distribution has the right shape. Compare the fitted distribution
-  against an observed histogram that was *not* used in the fit. For
-  income, ACS table B19001 gives household counts in 16 brackets;
+  against an observed histogram that was *not* used in the fit.
+
+  **This is not a row-level train/test split, because there is no
+  row-level data to split.** The Census Bureau never publishes individual
+  ACS responses, only aggregate tabulations, for privacy. What plays the
+  role of held-out data here is a *different published tabulation of the
+  same population*: ACS table B19001 reports household counts across 16
+  income brackets, far richer than the single median and mean the fit
+  consumed. The fitting numbers (B19013, B19025, B11001) collapse to two
+  parameters; B19001 carries 16. Because the fit never sees the extra
+  information B19001 holds, comparing the fitted lognormal's implied
+  bracket shares against the observed ones is a genuine out-of-sample
+  check. "Held out" means a different published table here, not
+  held-out rows.
+
   `income_utils.lognormal_bracket_shares` produces the model-implied
-  shares and `bracket_fit_distance` scores them as the fraction of
-  households placed in the wrong bracket. Worked result for Charleston
-  County: the package defaults (70,000, ratio 1.15) misplace 31 % of
-  households, while the measured pair (84,320, ratio 1.5047) misplaces
-  7 %. The residual sits in the lowest brackets, where a lognormal cannot
+  shares from the two fitted parameters; `bracket_fit_distance` scores
+  them against the observed B19001 shares as a total-variation distance,
+  the fraction of households the model places in the wrong bracket (0 is
+  perfect). Worked result for Charleston County (ACS 2020-2024 5-year):
+  the package defaults (70,000, ratio 1.15) misplace 33 % of households,
+  while the measured pair (88,494, ratio 1.4879) misplaces 7 %. The
+  residual sits in the lowest brackets, where a lognormal cannot
   reproduce the spike of near-zero-income households. Record that limit
   rather than tuning around it, since the functional form is inherited
   from native DYNAMO-M and changing it would break parity.
@@ -211,9 +249,11 @@ the catalogue (recommended: 1.0 for the Charleston set). See
    (0.3 / 0.5 / 0.7). About 12 runs.
 2. Set `median_income` and `mean_median_inc_ratio` from ACS Charleston
    County. Zero modelling effort, removes two free parameters. **Done**:
-   `fetch_acs_county_income("45", "019")` gives 84,320 and 1.5047, and the
-   B19001 bracket check scores the fit at 0.071 against 0.309 for the
-   defaults. Notebook 2 (§2.6) pins and re-verifies these.
+   `fetch_acs_county_income("45", "019")` gives 88,494 and 1.4879 on the ACS
+   2020-2024 5-year release, and the B19001 bracket check scores the fit at
+   0.072 against 0.326 for the defaults. Notebook 2 (§2.6) pins and
+   re-verifies these. Refresh both when a new ACS vintage is published, and
+   keep the fit and the B19001 validation on the same vintage.
 3. Pull NFIP take-up for Charleston County from OpenFEMA and check the
    insurance scenarios against it.
 4. Only then decide whether a survey (Tier 3) is worth the cost.
