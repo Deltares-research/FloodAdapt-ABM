@@ -11,6 +11,56 @@ import numpy as np
 import pytest
 import xarray as xr
 
+from floodadapt_abm import CouplingConfig, DecisionConfig
+
+
+def historical_modes_config(
+    random_seed: int = 42, **decision_overrides
+) -> CouplingConfig:
+    """
+    Build a config with every behaviour switch on its pre-2026-07 alternative.
+
+    The ``CouplingConfig.legacy()`` preset was retired in 2026-08 together
+    with the golden regression it guarded, but the alternative algorithms
+    themselves remain ordinary config options: the Bernoulli-clip draw, the
+    raw-frequency SEU probabilities and the binary perception spike are all
+    still useful for sensitivity work and for the matched-hazard comparison
+    in notebook 2.  Tests that exercise them name them explicitly here.
+
+    Note this is **not** the old preset: it uses the default
+    ``income_mode="synthetic_lognormal"``, because the ``"mpd_ratio"`` mode
+    the preset pinned was removed (its affordability gate never bound).
+
+    Parameters
+    ----------
+    random_seed : int
+        Global seed passed to :class:`CouplingConfig`.  Default ``42``.
+    **decision_overrides
+        Extra :class:`DecisionConfig` fields to set or override.
+
+    Returns
+    -------
+    CouplingConfig
+    """
+    fields = {
+        "event_draw_mode": "bernoulli_clip",
+        "nuisance_freq_threshold": None,
+        "max_events_per_year": 4,
+        "cap_policy": "random",
+        "seu_prob_mode": "raw_freq",
+        "perception_mode": "binary",
+        "flood_significance_threshold": 0.0,
+        "adaptation_total_cost": None,
+        "include_insurance": False,
+        "insurance_pricing": "community",
+        "insurance_loading": 1.0,
+        "insurance_subsidy": 0.0,
+    }
+    fields.update(decision_overrides)          # overrides win over the defaults
+    return CouplingConfig(
+        decision=DecisionConfig(**fields), random_seed=random_seed
+    )
+
 
 def make_mock_dataset(
     n_objects: int = 12,

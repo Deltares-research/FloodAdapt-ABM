@@ -2,9 +2,13 @@
 test_income_model.py
 ====================
 Tests for the synthetic lognormal income/wealth port (native DYNAMO-M
-pipeline), income percentiles, the fixed adaptation cost, and —
-critically — that the affordability gate genuinely binds for part of the
-population (under legacy defaults it is algebraically inert).
+pipeline), income percentiles, the fixed adaptation cost, and, critically,
+that the affordability gate genuinely binds for part of the population.
+
+That last property is why the ``income_mode="mpd_ratio"`` fallback was
+removed in 2026-08: it made income and adaptation cost both proportional to
+``max_pot_dmg``, so the gate reduced to one population-wide constant and
+never bound for anybody.
 """
 from __future__ import annotations
 
@@ -16,11 +20,11 @@ from floodadapt_abm.income_utils import (
     percentiles_from_income_values,
     percentiles_from_value_proxy,
 )
-from tests.conftest import make_mock_dataset
+from tests.conftest import make_mock_dataset, historical_modes_config
 
 
 def _synthetic_cfg(**overrides) -> CouplingConfig:
-    cfg = CouplingConfig.legacy()
+    cfg = historical_modes_config()
     cfg.decision.income_mode = "synthetic_lognormal"
     for key, value in overrides.items():
         setattr(cfg.decision, key, value)
@@ -56,12 +60,9 @@ def test_synthetic_income_independent_of_building_value():
     assert abs(corr) < 0.2  # uncorrelated (uniform percentiles vs table values)
     # And wealth is no longer identically max_pot_dmg.
     assert not np.allclose(engine._data.wealth, mpd)
-    # Legacy control on the same table: income IS max_pot_dmg / 4.14.
-    legacy = SimulationEngine(ds=ds, config=CouplingConfig.legacy())
-    legacy_corr = np.corrcoef(
-        legacy._data.income.astype(np.float64), mpd
-    )[0, 1]
-    assert legacy_corr > 0.999
+    # The removed ``mpd_ratio`` mode produced a correlation above 0.999 here,
+    # because income was literally ``max_pot_dmg / 4.14``.  That degeneracy is
+    # what this test guards against returning.
 
 
 def test_wealth_follows_native_percentile_ratio_table():
@@ -106,8 +107,12 @@ def test_affordability_gate_binds_partially_under_new_economics():
     """
     Regression: with synthetic incomes + fixed cost, the fraction of
     households failing ``income * expenditure_cap <= annual_cost`` must be
-    strictly between 0 and 1.  Under the legacy economics the ratio is a
-    population-wide constant (1.689) and the fraction is exactly 0.
+    strictly between 0 and 1.
+
+    This is the property the removed ``income_mode="mpd_ratio"`` could not
+    deliver: there, income and cost were both proportional to
+    ``max_pot_dmg``, so the ratio was one population-wide constant (1.689)
+    and the fraction was exactly 0 for every household.
     """
     # Cost calibrated so the 6 % expenditure cap bisects the income
     # distribution: annual cost ~6.9k -> constrained iff income <= ~114k,
@@ -123,24 +128,18 @@ def test_affordability_gate_binds_partially_under_new_economics():
         f"affordability gate should bind heterogeneously, got {fraction:.3f}"
     )
 
-    # Legacy control: gate never binds (mpd cancels; ratio 1.689 for all).
-    legacy = _engine(CouplingConfig.legacy())
-    legacy_constrained = (
-        legacy._data.income * 0.06 <= legacy._annual_adapt_cost
-    ) & (legacy.max_pot_dmg > 0)
-    assert legacy_constrained.sum() == 0
 
+def test_removed_mpd_ratio_income_mode_raises_a_directed_error():
+    """
+    The degenerate legacy income mode must fail loudly, not silently.
 
-def test_legacy_income_mode_unchanged():
-    """mpd_ratio fallback still reproduces the historical relation exactly."""
-    engine = _engine(CouplingConfig.legacy())
-    np.testing.assert_allclose(
-        engine._data.income * 4.14, engine.max_pot_dmg, rtol=1e-5
-    )
-    np.testing.assert_allclose(
-        engine._data.wealth, engine.max_pot_dmg, rtol=1e-5
-    )
-    assert engine._data.income_percentile is None
+    It was removed in 2026-08; anyone carrying an old config should get an
+    error that names the replacement rather than a bare "unknown mode".
+    """
+    cfg = _synthetic_cfg()
+    cfg.decision.income_mode = "mpd_ratio"
+    with pytest.raises(ValueError, match="removed"):
+        _engine(cfg)
 
 
 def test_explicit_income_and_wealth_arrays_override():
@@ -156,7 +155,7 @@ def test_explicit_income_and_wealth_arrays_override():
 
 
 def test_unknown_income_mode_raises():
-    cfg = CouplingConfig.legacy()
+    cfg = historical_modes_config()
     cfg.decision.income_mode = "bogus"
     with pytest.raises(ValueError, match="income_mode"):
         _engine(cfg)

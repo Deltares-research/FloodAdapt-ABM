@@ -100,7 +100,7 @@ The `DecisionConfig` defaults implement the fixes from the 2026-07 review (ratio
 | `include_insurance` | `False` | Optional third decision option (ported native `calcEU_insure`, 10 % deductible) |
 | `insurance_pricing` | `"community"` | Premium rating: flat mean-EAD rate (native) or `"risk_based"` (each household's own expected payout). Levers: `insurance_loading`, `insurance_subsidy` |
 
-**Reproducing historical results:** `CouplingConfig.legacy()` pins every switch to the pre-review behaviour **bit-exactly** (guarded by the golden regression `tests/test_legacy_mode.py`); the `verification/` harnesses are pinned to it.
+**Comparing against the pre-review behaviour:** every switch above also accepts its pre-review alternative (`"bernoulli_clip"`, `"raw_freq"`, `"binary"`, the cap policies), so you can isolate one change at a time. Notebook 2 uses them for its R2/R3 matched-hazard comparison. The `CouplingConfig.legacy()` preset that used to bundle them, and the golden regression that pinned it bit-exactly, were retired in 2026-08; name the switches you want explicitly instead. The `income_mode="mpd_ratio"` fallback was removed outright, because income and adaptation cost were both proportional to building value and the affordability gate never bound.
 
 Per-agent economic inputs can be supplied directly (`income_per_agent`, `wealth_per_agent`) or via **income percentiles** (`income_percentile_per_agent`; derive from ACS block-group data with `floodadapt_abm.income_utils.derive_income_percentiles`).
 
@@ -125,10 +125,10 @@ Call `preferred_decision_rule(config.decision)` rather than branching on `DYNAMO
 ## Tests & verification
 
 ```bash
-pytest tests/ -q                 # full suite incl. all bit-parity gates + golden legacy regression
+pytest tests/ -q                 # full suite incl. all bit-parity gates
 ```
 
-Phase-gate evidence (reports, metrics, re-runnable harnesses) lives in [verification/](verification/); the harnesses are pinned to `CouplingConfig.legacy()` (set `FA_ABM_HARNESS_CONFIG=new` to re-run them under the current defaults; outputs get a `_newdefaults` suffix). CI runs the suite and the examples on every push (see `.github/workflows/ci.yml`).
+Phase-gate evidence (reports, metrics, re-runnable harnesses) lives in [verification/](verification/); the harnesses run under the current package defaults. CI runs the suite and the examples on every push (see `.github/workflows/ci.yml`).
 
 ## Documentation
 

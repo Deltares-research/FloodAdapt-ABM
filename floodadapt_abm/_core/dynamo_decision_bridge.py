@@ -68,8 +68,8 @@ class DynamoDecisionBridge:
     income_per_agent : np.ndarray or None
         Annual income for each *residential* agent in the same unit as
         damages (USD by default).  Shape ``(n_res_agents,)``.
-        When ``None`` the bridge synthesises income from
-        ``max_pot_dmg / income_to_wealth_ratio`` (fallback for demos).
+        When ``None`` the bridge synthesises income from the regional
+        lognormal distribution (``income_mode="synthetic_lognormal"``).
     amenity_value_per_agent : np.ndarray or None
         Amenity value per agent.  When ``None`` defaults to zero.
 
@@ -606,12 +606,11 @@ class DynamoDecisionBridge:
 
         1. explicit ``income_per_agent`` / ``wealth_per_agent`` arrays
            (e.g. census/ACS data joined on ``object_id``),
-        2. otherwise the ``income_mode`` fallback:
+        2. otherwise the ``income_mode`` fallback, which is always
            ``"synthetic_lognormal"`` (native DYNAMO-M port, income
-           independent of building value) or ``"mpd_ratio"`` (legacy,
-           ``income = max_pot_dmg / income_to_wealth_ratio`` — which makes
-           wealth identically the building value and the affordability
-           constraint inert; retained for reproducibility only).
+           independent of building value).  The former ``"mpd_ratio"``
+           fallback was removed in 2026-08 because its affordability gate
+           never bound for any household; it now raises.
         """
         self.income_percentile: np.ndarray | None = None
 
@@ -639,20 +638,21 @@ class DynamoDecisionBridge:
                 self._synthesize_income_wealth(income_percentile_per_agent)
             )
         elif self._dec.income_mode == "mpd_ratio":
-            # Legacy fallback: income derived from max_pot_dmg (wealth then
-            # cancels back to exactly max_pot_dmg — see class docstring).
-            self.income = np.where(
-                self._dec.income_to_wealth_ratio > 0,
-                self.max_pot_dmg / self._dec.income_to_wealth_ratio,
-                0.0,
-            ).astype(np.float32)
-            self.wealth = (
-                self.income * self._dec.income_to_wealth_ratio
-            ).astype(np.float32)
+            raise ValueError(
+                "income_mode='mpd_ratio' was removed in 2026-08. It set "
+                "income = max_pot_dmg / income_to_wealth_ratio, so wealth "
+                "cancelled back to exactly the building value and both sides "
+                "of the affordability test became proportional to "
+                "max_pot_dmg. The gate collapsed to one global constant and "
+                "never bound for any household. Use the default "
+                "income_mode='synthetic_lognormal', and set median_income / "
+                "mean_median_inc_ratio for your study area (see "
+                "floodadapt_abm.income_utils.fetch_acs_county_income)."
+            )
         else:
             raise ValueError(
                 f"Unknown income_mode {self._dec.income_mode!r}; expected "
-                "'synthetic_lognormal' or 'mpd_ratio'."
+                "'synthetic_lognormal'."
             )
 
         # -- Amenity value ---------------------------------------------------
@@ -719,10 +719,12 @@ class DynamoDecisionBridge:
           model (country-scaled constant, ``prepare_scale_to_GDP.py``);
           cost independent of property value lets the affordability
           constraint discriminate between households;
-        * legacy fallback (``None``):
+        * fractional fallback (``None``):
           ``adaptation_cost_fraction * max_pot_dmg`` — proportional to
-          building value, which (with ``income_mode="mpd_ratio"``) makes
-          the affordability gate cancel algebraically.
+          building value.  Prefer the fixed amount for a real study: a cost
+          proportional to building value weakens the affordability signal,
+          and paired with the removed ``income_mode="mpd_ratio"`` it used to
+          cancel out of the gate entirely.
 
         Returns
         -------

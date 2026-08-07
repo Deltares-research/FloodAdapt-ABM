@@ -8,7 +8,7 @@ Two families of tests:
 
 * **Legacy-branch spec** — the original Bernoulli-clip tests, now pinned
   explicitly to ``mode="bernoulli_clip"`` / ``cap_policy="random"``.  They
-  define the frozen legacy semantics that ``CouplingConfig.legacy()`` and
+  define the frozen legacy semantics that ``historical_modes_config()`` and
   the golden regression rely on.
 * **Poisson-mode tests** — the statistically-correct draw, including the
   rate-recovery regression that fails by construction under the legacy

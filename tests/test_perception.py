@@ -11,11 +11,11 @@ import numpy as np
 import pytest
 
 from floodadapt_abm import CouplingConfig, SimulationEngine
-from tests.conftest import make_mock_dataset
+from tests.conftest import make_mock_dataset, historical_modes_config
 
 
 def _engine(perception_mode: str = "binary", **decision_overrides) -> SimulationEngine:
-    cfg = CouplingConfig.legacy()
+    cfg = historical_modes_config()
     cfg.decision.perception_mode = perception_mode
     for key, value in decision_overrides.items():
         setattr(cfg.decision, key, value)
@@ -103,7 +103,7 @@ def test_significance_threshold_creates_deadband():
     is the fix for float-noise floods and for adapted agents resetting
     their timer on tiny residual damages.
     """
-    cfg = CouplingConfig.legacy()
+    cfg = historical_modes_config()
     cfg.decision.perception_mode = "severity"
     cfg.decision.flood_significance_threshold = 0.01
     engine = SimulationEngine(ds=make_mock_dataset(), config=cfg)

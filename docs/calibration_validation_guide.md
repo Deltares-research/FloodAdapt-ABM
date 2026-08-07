@@ -42,6 +42,8 @@ results depend on it (H = high, M = medium, L = low).
 | `median_income` | Median of the synthetic income distribution | 70,000 | Charleston order of magnitude | H | **Directly measurable**: ACS B19013 for the study county (`fetch_acs_county_income`) |
 | `mean_median_inc_ratio` | Spread of the income distribution | 1.15 | UN WIID fallback (native) | H | **Directly measurable**: ACS B19025 / B11001 over B19013. Controls `sd`, so it matters more than the median |
 | `rank_correlation` (value proxy) | Income-to-building-value sorting strength | 0.5 | Household-finance literature (0.4 to 0.6) | M | Bounds [0.3, 0.7]; replaced entirely by a spatial income join |
+| wealth-to-income table (`_WEALTH_RATIO_*`, not a config field) | Wealth multiplier by income percentile, used by the default income mode | 6 anchor points, `[0, 1.06, 4.14, 4.19, 5.24, 6]` at percentiles `[0, 20, 40, 60, 80, 100]` | Native `decision_module.py:27-29`, **no citation given** | M | **Not calibrated here.** Would need a household wealth survey (in the US, the Survey of Consumer Finances) |
+| `income_to_wealth_ratio` | Scalar wealth multiplier, explicit-income runs only | 4.14 | Native table, 40th percentile | L | Same source; unused by the default income mode |
 | `adaptation_total_cost` | One-off dry-floodproofing cost | None (legacy fraction) | Native: 10,800 EUR France, GDP-scaled | H | Local contractor quotes, FEMA mitigation cost tables |
 | `expenditure_cap` | Max share of income spent on adaptation or premium | 0.06 | DYNAMO-M settings | H | Household budget surveys |
 | `insurance_pricing` | Rating rule: `"community"` (one flat premium) or `"risk_based"` (own expected loss) | `"community"` | Native rule / this project | n/a | Scenario input, not calibrated |
@@ -100,10 +102,48 @@ percentiles come from the value proxy. Ask this question of every
 parameter before tuning it: is it measurable from aggregate data, or does
 it genuinely require micro-data?
 
+**Why a lognormal, and what the two parameters do.** The model assumes
+regional income follows a lognormal distribution: `log(income)` is normally
+distributed with parameters `mu` and `sigma`. A lognormal is the standard
+choice for income because it is right-skewed. Most households cluster below
+the average, and a thin tail of high earners pulls the average up. That is
+what real income data looks like.
+
+Nobody publishes `mu` and `sigma`, so the code converts from statistics
+that are published. The **median** is the middle household, half above and
+half below. The **mean** is total income over households, the plain
+average. Because a few very rich households lift the average without moving
+the middle household, the mean sits at or above the median, and the gap
+between them measures the spread. For a lognormal both conversions are
+exact:
+
+- `median = exp(mu)`, so `mu = ln(median)`;
+- `mean / median = exp(sigma^2 / 2)`, so `sigma = sqrt(2 ln(mean/median))`.
+
+So the pair is not "mean and standard deviation". It is the median, which
+fixes the centre, and `mean_median_inc_ratio`, which fixes the spread. Both
+are needed: two counties can share a median and be nothing alike, one equal
+and one very unequal, and only the ratio separates them. This is why the
+ratio matters more than the median for the results.
+
+Downstream, `_synthesize_income_wealth` in
+`_core/dynamo_decision_bridge.py` draws 5,000 samples from that lognormal
+once per run, sorts them, and lets each household read its income off the
+curve at its own income percentile (axis 2). Wealth follows from income
+through the native wealth-to-income ratio table. Income and wealth then
+drive the affordability check (`expenditure_cap`) in the adaptation and
+insurance decision. The draw uses a dedicated seed-derived generator, so
+building the distribution never perturbs the event-draw or decision RNG
+streams and the bit-parity gates stay valid.
+
+For Charleston the measured pair gives `sigma = sqrt(2 ln(1.4879)) = 0.892`.
+The default ratio 1.15 implies `sigma = 0.529`, a much narrower and, for
+this county, plainly wrong distribution: it predicts 2.4 % of households
+above $200k against 17.2 % observed.
+
 **What "calibrating the marginal" actually means.** There are exactly two
 free parameters on this axis, `median_income` and `mean_median_inc_ratio`,
-which map to the lognormal's own parameters by `mu = ln(median_income)`,
-`sd = sqrt(2 ln(mean_median_inc_ratio))`. Fitting them is not an
+which map to the lognormal's own parameters as above. Fitting them is not an
 optimisation: there is no loss function and nothing is searched. Two
 parameters are matched to two independent published numbers.
 `median_income` is read straight off ACS table B19013, which already is a
@@ -149,6 +189,133 @@ Useful free sources for a US coastal study:
 
 Fit by hand or by grid search over the few high-ranked parameters. Keep
 the number of tuned parameters below the number of independent patterns.
+
+### A worked calibration, end to end
+
+The income marginal, done for real, with Charleston County numbers. Steps 1
+to 5 are the whole calibration. Step 6 is the check, and it uses data the fit
+never touched.
+
+**Step 1. Fetch the three published numbers.** One call does it:
+
+```python
+from floodadapt_abm.income_utils import fetch_acs_county_income
+stats = fetch_acs_county_income("45", "019")     # Charleston County, SC
+```
+
+| Source | Meaning | Value |
+|---|---|---|
+| B19013 | median household income | 88,494 |
+| B19025 | aggregate household income | 23,566,353,400 |
+| B11001 | households | 178,975 |
+
+**Step 2. Derive the mean.** ACS publishes no mean, so compute it:
+
+```
+mean = 23,566,353,400 / 178,975 = 131,674
+```
+
+**Step 3. Form the ratio.** This is the parameter the model wants:
+
+```
+mean_median_inc_ratio = 131,674 / 88,494 = 1.4879
+```
+
+**Step 4. Convert to the lognormal's own parameters.** Both conversions are
+exact, no fitting involved:
+
+```
+mu    = ln(88,494)              = 11.3907
+sigma = sqrt(2 ln 1.4879)       = 0.8915
+```
+
+**Step 5. Assign them.** Two parameters, two published numbers:
+
+```python
+config.decision.median_income = stats["median_income"]            # 88,494
+config.decision.mean_median_inc_ratio = stats["mean_median_ratio"]  # 1.4879
+```
+
+That is the entire calibration. There is no loss function, nothing is
+searched, and the fit is exact by construction, so there is no risk of
+over-fitting at this step. What it cannot tell you is whether a
+two-parameter lognormal is the right *shape* for this county.
+
+**Step 6. Check the shape against data the fit never saw.**
+
+```python
+from floodadapt_abm.income_utils import (
+    bracket_fit_distance, fetch_acs_income_brackets, lognormal_bracket_shares,
+)
+observed = fetch_acs_income_brackets("45", "019")["shares"]        # B19001
+bracket_fit_distance(observed, lognormal_bracket_shares(88_494, 1.4879))  # 0.072
+bracket_fit_distance(observed, lognormal_bracket_shares(70_000, 1.15))    # 0.326
+```
+
+The measured pair misplaces about 7 % of households across the 16 brackets;
+the package defaults misplace about 33 %. See Tier 4 for why B19001 counts as
+held-out data and for how to read the residual.
+
+### Where the ACS data lives
+
+Which published table supplies which parameter:
+
+| ACS table | Variables | Fetched by | Ends up in |
+|---|---|---|---|
+| B19013 | `B19013_001E` | `fetch_acs_county_income` | `median_income` |
+| B19025 | `B19025_001E` | same call | numerator of the derived mean |
+| B11001 | `B11001_001E` | same call | denominator of the derived mean |
+| B19001 | `B19001_002E` to `B19001_017E` (16 brackets) | `fetch_acs_income_brackets` | validation only, never stored in the config |
+
+If a browser view of B19001 appears to show only a handful of rows, it is a
+collapsed view. The definitive list is the API variable index,
+`api.census.gov/data/2024/acs/acs5/groups/B19001.html`, which shows
+`B19001_001E` (the total) plus the 16 bracket variables.
+
+Where the numbers are actually kept, which is easy to assume wrongly:
+
+- **The package caches nothing.** Both fetchers issue a fresh HTTP request on
+  every call. There is no disk cache and no memoisation, so a run without
+  network access cannot fetch anything.
+- The fitted values live **in memory only**, on `config.decision.median_income`
+  and `config.decision.mean_median_inc_ratio`.
+- Notebook 2 therefore **pins them as literal constants** so it reproduces
+  offline, and re-fetches only to report drift against those constants.
+- `tests/test_income_marginal.py` pins its own copy so the suite stays offline.
+- The only things written to disk are the **TIGER/Line shapefiles**, cached by
+  the notebook helper to `%TEMP%\floodadapt_abm_census` (override with
+  `FA_ABM_CENSUS_CACHE`), and the Tier A/B percentile file
+  `income_percentiles_charleston.npy` if you ever produce one.
+- The API key is read from `CENSUS_API_KEY` and is never written to any file.
+
+Both fetchers take a `year` argument and default to `2024`, meaning the ACS
+2020-2024 5-year release. Use the same vintage for the fit and for the
+validation.
+
+### Inherited constants that are not calibrated
+
+Not every number in the model is measured, and the honest move is to say
+which. Two stand out.
+
+**The wealth-to-income table.** Wealth is not sampled independently; it is
+`ratio(percentile) * income`, interpolated from six anchor points that rise
+from 0 at the bottom to 6.0 at the top. Those six numbers come straight from
+native DYNAMO-M (`decision_module.py:27-29`), where the only documentation is
+the inline comment "wealth in relation to income". No source is cited, and
+nothing about them is specific to any study area, Charleston included.
+Changing them breaks bit-parity with native, so treat them as a sensitivity
+target rather than a free parameter: vary them, see whether your conclusions
+move, and report that.
+
+**The value-proxy rank correlation.** `rank_correlation = 0.5` is a literature
+value for how income ranks track housing-value ranks, not a Charleston
+measurement. There is no per-building income ground truth to fit it against.
+Report it as an assumption with bounds [0.3, 0.7].
+
+The contrast worth keeping in view: the income *marginal* is measured, in the
+sense that two published numbers determine it exactly. The wealth multiplier
+and the rank correlation are assumed. A calibration report should not present
+them in the same tone.
 
 ### Tier 3: a small survey (the first real cost)
 

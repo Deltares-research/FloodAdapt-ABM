@@ -67,8 +67,9 @@ with the same RNG stream, and are gated to agree bit-for-bit.
 AgentState
     Per-agent state container for the engine.
 CouplingConfig / DecisionConfig / NetCDFMappingConfig
-    Configuration dataclasses.  ``CouplingConfig.legacy()`` reproduces the
-    pre-2026-07 behaviour bit-exactly (verification harnesses pin it).
+    Configuration dataclasses.  Every behaviour switch also accepts its
+    pre-2026-07 alternative (``"bernoulli_clip"``, ``"raw_freq"``,
+    ``"binary"``), kept as ordinary options for sensitivity work.
 
 Note on setup_lookup_table
 --------------------------

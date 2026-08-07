@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from floodadapt_abm import CouplingConfig, SimulationEngine
-from tests.conftest import make_mock_dataset
+from tests.conftest import make_mock_dataset, historical_modes_config
 
 
 def _ds_with_freqs(freqs: np.ndarray):
@@ -33,7 +33,7 @@ def test_nuisance_filter_slices_catalogue_and_damage_matrices():
     freqs = np.array([0.01, 0.2, 1.0, 1.5, 3.0, 12.0])
     ds = _ds_with_freqs(freqs)
 
-    cfg = CouplingConfig.legacy()
+    cfg = historical_modes_config()
     cfg.decision.nuisance_freq_threshold = 1.0
     engine = SimulationEngine(ds=ds, config=cfg)
 
@@ -50,7 +50,7 @@ def test_nuisance_filter_slices_catalogue_and_damage_matrices():
     assert dmg_fp.shape == (engine.n_agents, kept.sum())
 
     # The retained columns match the unfiltered engine's matching columns.
-    cfg_all = CouplingConfig.legacy()
+    cfg_all = historical_modes_config()
     engine_all = SimulationEngine(ds=_ds_with_freqs(freqs), config=cfg_all)
     dmg_no_all, _ = engine_all.prepare_damages(0.5)
     assert np.array_equal(dmg_no, dmg_no_all[:, kept])
@@ -59,7 +59,7 @@ def test_nuisance_filter_slices_catalogue_and_damage_matrices():
 def test_nuisance_filter_none_keeps_everything():
     freqs = np.array([0.01, 0.2, 1.0, 1.5, 3.0, 12.0])
     engine = SimulationEngine(
-        ds=_ds_with_freqs(freqs), config=CouplingConfig.legacy()
+        ds=_ds_with_freqs(freqs), config=historical_modes_config()
     )
     assert engine._event_freqs.shape == (6,)
 
@@ -71,7 +71,7 @@ def test_nuisance_filter_none_keeps_everything():
 def test_p_floods_seu_exceedance_formula():
     """exceedance mode: p = 1 - exp(-freq); stays < 1 even for freq > 1."""
     freqs = np.array([0.01, 0.5, 1.0, 3.0, 12.0])
-    cfg = CouplingConfig.legacy()
+    cfg = historical_modes_config()
     cfg.decision.seu_prob_mode = "exceedance"
     engine = SimulationEngine(ds=_ds_with_freqs(freqs), config=cfg)
 
@@ -85,13 +85,13 @@ def test_p_floods_seu_exceedance_formula():
 def test_p_floods_seu_raw_matches_legacy():
     freqs = np.array([0.01, 0.5, 1.0, 3.0])
     engine = SimulationEngine(
-        ds=_ds_with_freqs(freqs), config=CouplingConfig.legacy()
+        ds=_ds_with_freqs(freqs), config=historical_modes_config()
     )
     assert np.array_equal(engine._data.p_floods_seu, freqs)
 
 
 def test_p_floods_seu_unknown_mode_raises():
-    cfg = CouplingConfig.legacy()
+    cfg = historical_modes_config()
     cfg.decision.seu_prob_mode = "bogus"
     engine = SimulationEngine(ds=make_mock_dataset(), config=cfg)
     with pytest.raises(ValueError, match="seu_prob_mode"):
@@ -103,7 +103,7 @@ def test_p_floods_seu_unknown_mode_raises():
 # ---------------------------------------------------------------------------
 
 def _new_mode_config() -> CouplingConfig:
-    cfg = CouplingConfig.legacy()
+    cfg = historical_modes_config()
     cfg.decision.event_draw_mode = "poisson"
     cfg.decision.max_events_per_year = None
     cfg.decision.cap_policy = "largest_damage"

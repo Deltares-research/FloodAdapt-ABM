@@ -19,9 +19,9 @@ Two draw modes are provided (selected via
     One Bernoulli trial per event with ``p = min(freq_i * dt, 1)``.
     Frequencies above ``1/dt`` are clipped to certainty, so sub-annual
     events occur every single year and — combined with the
-    ``max_events_per_year`` cap — crowd out the rare extremes.  Retained
-    bit-exactly for reproducing historical results
-    (``CouplingConfig.legacy()``).
+    ``max_events_per_year`` cap — crowd out the rare extremes.  Kept as an
+    ordinary option (its RNG call order is frozen) so the Poisson draw can be
+    compared against it; do not use it for a real study.
 
 Cap policies
 ------------
@@ -117,9 +117,10 @@ def draw_year_events(
         )
 
     if mode == "bernoulli_clip":
-        # LEGACY branch — byte-identical RNG call order (rng.random ->
-        # rng.choice -> np.sort); the golden regression test
-        # (tests/test_legacy_mode.py) depends on this exact stream.
+        # PRE-REVIEW branch — byte-identical RNG call order (rng.random ->
+        # rng.choice -> np.sort).  Keep the stream frozen: notebook 2 relies on
+        # it to give R2 and R3 bit-identical flood histories, which is what
+        # makes that comparison a controlled one.
         probs = np.clip(freqs * dt, 0.0, 1.0)
         occurred_mask = rng.random(probs.shape[0]) < probs
         occurred_idx = np.flatnonzero(occurred_mask)

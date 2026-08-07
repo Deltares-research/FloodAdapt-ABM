@@ -289,23 +289,26 @@ class TestPropertyCapping:
         assert np.all(dmg <= bridge.max_pot_dmg + 1e-3)
 
     def test_wealth_consistent_with_income(self, mock_ds) -> None:
-        """LEGACY income mode: wealth == income * income_to_wealth_ratio.
+        """Explicit-income path: wealth == income * income_to_wealth_ratio.
 
-        Pinned to ``CouplingConfig.legacy()`` — the relation is specific to
-        the historical ``mpd_ratio`` fallback; the current default
-        (``synthetic_lognormal``) uses the percentile-varying native
-        wealth-ratio table instead (covered in ``test_income_model.py``).
+        This scalar is the *only* surviving use of
+        ``income_to_wealth_ratio``: it applies when a caller supplies
+        ``income_per_agent`` but no ``wealth_per_agent``.  The default
+        ``synthetic_lognormal`` mode ignores it and interpolates the
+        percentile-varying native table instead (covered in
+        ``test_income_model.py``).
         """
-        legacy_bridge = DynamoDecisionBridge(
-            ds=mock_ds, config=CouplingConfig.legacy()
+        types = np.asarray(
+            mock_ds["object_id"].attrs["primary_object_type"], dtype=str
         )
-        expected_wealth = (
-            legacy_bridge.income
-            * legacy_bridge.config.decision.income_to_wealth_ratio
+        n_res = int((np.char.find(types, "RES") >= 0).sum())
+        income = np.linspace(30_000.0, 90_000.0, n_res).astype(np.float32)
+
+        bridge = DynamoDecisionBridge(
+            ds=mock_ds, config=CouplingConfig(), income_per_agent=income
         )
-        np.testing.assert_allclose(
-            legacy_bridge.wealth, expected_wealth, rtol=1e-4
-        )
+        expected_wealth = income * bridge.config.decision.income_to_wealth_ratio
+        np.testing.assert_allclose(bridge.wealth, expected_wealth, rtol=1e-4)
 
     def test_wealth_upper_bounded(self, bridge: DynamoDecisionBridge) -> None:
         """Wealth should not be negative (income from max_pot_dmg is non-negative)."""

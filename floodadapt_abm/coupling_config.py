@@ -158,12 +158,20 @@ class DecisionConfig:
         introduce stochastic choice.  ``0.0`` disables stochastic errors.
         Default: ``0.0``.
     income_to_wealth_ratio : float
-        Multiplier converting annual income to household wealth when wealth
-        data are not available from the dataset.
-        Default: ``4.14`` (median ratio from DYNAMO-M income-wealth table,
-        corresponding to the 40th percentile).  Source:
+        Scalar multiplier converting annual income to household wealth,
+        used **only** when an explicit ``income_per_agent`` array is supplied
+        without a matching ``wealth_per_agent``.  The default
+        ``income_mode="synthetic_lognormal"`` path ignores it and
+        interpolates the full percentile-varying table instead
+        (``DynamoDecisionBridge._WEALTH_RATIO_*``).
+        Default: ``4.14`` (median ratio from the DYNAMO-M income-wealth
+        table, corresponding to the 40th percentile).  Source:
         ``decision_module.py`` lines 27-30, percentile table
         ``[0, 20, 40, 60, 80, 100]`` → ratio ``[0, 1.06, 4.14, 4.19, 5.24, 6]``.
+        Those six numbers are inherited from native DYNAMO-M with no citation
+        beyond the comment "wealth in relation to income"; they are not
+        calibrated for any particular study area (see
+        ``docs/calibration_validation_guide.md``).
     event_draw_mode : str
         Stochastic model for the yearly flood-event draw.
 
@@ -177,7 +185,7 @@ class DecisionConfig:
           clipped to certainty, so sub-annual events occur every year and
           (combined with ``max_events_per_year``) crowd out extremes.
           Retained for reproducing historical results only.
-        Default: ``"poisson"`` (``legacy()`` pins ``"bernoulli_clip"``).
+        Default: ``"poisson"``.
     nuisance_freq_threshold : float or None
         When set, events with ``freq > threshold`` (events/year) are dropped
         from the catalogue once at data load — from both the hazard draw and
@@ -194,7 +202,7 @@ class DecisionConfig:
         single simulation year; ``None`` disables the cap (recommended with
         ``"poisson"`` — realised damage is already bounded by
         ``max_pot_dmg``, and any discard biases the hazard statistics).
-        Default: ``None`` (``legacy()`` pins ``4``).
+        Default: ``None``.
     cap_policy : str
         How surplus occurrences are discarded when ``max_events_per_year``
         binds.
@@ -204,7 +212,7 @@ class DecisionConfig:
         * ``"random"`` — legacy: uniform random selection without
           replacement (extremes are discarded at the same rate as nuisance
           events).
-        Default: ``"largest_damage"`` (``legacy()`` pins ``"random"``).
+        Default: ``"largest_damage"``.
     seu_prob_mode : str
         How event frequencies are converted into the exceedance
         probabilities fed to the SEU expected-utility integral.
@@ -215,7 +223,7 @@ class DecisionConfig:
           semantics of the integral.
         * ``"raw_freq"`` — legacy: ``p_i = freq_i`` used directly (valid
           only while every frequency is well below 1).
-        Default: ``"exceedance"`` (``legacy()`` pins ``"raw_freq"``).
+        Default: ``"exceedance"``.
     perception_mode : str
         How a realised flood feeds the risk-perception spike.
 
@@ -228,14 +236,14 @@ class DecisionConfig:
           (``flood_risk.py:619``).
         * ``"binary"`` — legacy/native: any positive damage produces the
           full ``risk_perc_max`` spike.
-        Default: ``"severity"`` (``legacy()`` pins ``"binary"``).
+        Default: ``"severity"``.
     flood_significance_threshold : float
         Minimum damage severity (fraction of ``max_pot_dmg``) for a flood to
         register as experienced — resets the flood timer and spikes risk
         perception.  ``0.0`` reproduces the legacy ``realised > 0`` trigger
         (where float round-off or a residual post-adaptation trickle counts
         as a flood).
-        Default: ``0.01`` (``legacy()`` pins ``0.0``).
+        Default: ``0.01``.
     perception_severity_form : str
         Functional form mapping damage severity ``s = realised /
         max_pot_dmg`` (clipped to [0, 1]) to the post-flood perception peak
@@ -283,20 +291,26 @@ class DecisionConfig:
         Default: ``0.1``.
     income_mode : str
         Fallback used to construct per-agent incomes when no
-        ``income_per_agent`` array is supplied.
+        ``income_per_agent`` array is supplied.  ``"synthetic_lognormal"``
+        is the only supported value.
 
         * ``"synthetic_lognormal"`` — port of the native DYNAMO-M pipeline:
           a regional lognormal income distribution is built from
           ``median_income`` and ``mean_median_inc_ratio``, each household
           samples it at its income percentile, and wealth follows the
-          percentile-varying wealth-to-income table (see
-          ``income_to_wealth_ratio``).  Income is independent of building
-          value, so the affordability constraint can genuinely bind.
-        * ``"mpd_ratio"`` — legacy: ``income = max_pot_dmg /
-          income_to_wealth_ratio`` (which makes wealth identically equal to
-          the building value and the affordability gate algebraically
-          inert).
-        Default: ``"synthetic_lognormal"`` (``legacy()`` pins ``"mpd_ratio"``).
+          percentile-varying wealth-to-income table
+          (``DynamoDecisionBridge._WEALTH_RATIO_*``).  Income is independent
+          of building value, so the affordability constraint can genuinely
+          bind.
+
+        The former ``"mpd_ratio"`` mode was **removed** (2026-08).  It set
+        ``income = max_pot_dmg / income_to_wealth_ratio``, so wealth cancelled
+        back to exactly the building value and both sides of the
+        affordability test became proportional to ``max_pot_dmg``.  The gate
+        therefore collapsed to a single global constant and never bound for
+        any household, which defeats the purpose of modelling income.
+        Passing it now raises a directed ``ValueError``.
+        Default: ``"synthetic_lognormal"``.
     median_income : float
         Regional median gross household income used by
         ``income_mode="synthetic_lognormal"`` (same role as the GDL/World-
@@ -383,8 +397,8 @@ class DecisionConfig:
     lifespan_dryproof: int = 75
 
     # -- Behaviour-mode switches (see class docstring for semantics) --------
-    # Defaults are the current behaviour; use ``DecisionConfig.legacy()``
-    # to reproduce the historical behaviour.
+    # Each switch also accepts the pre-2026-07 alternative, kept as an
+    # ordinary option for sensitivity work (see the class docstring).
     event_draw_mode: str = "poisson"
     nuisance_freq_threshold: float | None = None
     cap_policy: str = "largest_damage"
@@ -404,40 +418,6 @@ class DecisionConfig:
     insurance_pricing: str = "community"
     insurance_loading: float = 1.0
     insurance_subsidy: float = 0.0
-
-    @classmethod
-    def legacy(cls) -> "DecisionConfig":
-        """
-        Preset reproducing the historical (pre-refactor) behaviour **bit-exactly**.
-
-        Pins every behaviour-mode switch to its historical value regardless
-        of the current class defaults: Bernoulli-clip event draw with a
-        random cap of 4, raw-frequency SEU probabilities, binary flood
-        perception, ``max_pot_dmg``-derived income, fractional adaptation
-        cost, and no insurance.  Used by the golden regression test
-        (``tests/test_legacy_mode.py``) and the verification harnesses.
-
-        Returns
-        -------
-        DecisionConfig
-            A configuration whose behaviour is bit-identical to the
-            pre-refactor engine.
-        """
-        return cls(
-            event_draw_mode="bernoulli_clip",
-            nuisance_freq_threshold=None,
-            max_events_per_year=4,
-            cap_policy="random",
-            seu_prob_mode="raw_freq",
-            perception_mode="binary",
-            flood_significance_threshold=0.0,
-            income_mode="mpd_ratio",
-            adaptation_total_cost=None,
-            include_insurance=False,
-            insurance_pricing="community",
-            insurance_loading=1.0,
-            insurance_subsidy=0.0,
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -471,20 +451,3 @@ class CouplingConfig:
     netcdf: NetCDFMappingConfig = field(default_factory=NetCDFMappingConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
     random_seed: int = 42
-
-    @classmethod
-    def legacy(cls, random_seed: int = 42) -> "CouplingConfig":
-        """
-        Composite preset wrapping :meth:`DecisionConfig.legacy`.
-
-        Parameters
-        ----------
-        random_seed : int
-            Global random seed (default ``42``, the historical default).
-
-        Returns
-        -------
-        CouplingConfig
-            Configuration reproducing the pre-refactor behaviour bit-exactly.
-        """
-        return cls(decision=DecisionConfig.legacy(), random_seed=random_seed)

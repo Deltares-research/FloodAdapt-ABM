@@ -101,7 +101,7 @@ match what was fed to FloodAdapt; Charleston uses feet end to end.
 
 **The organising principle: `SimulationEngine` owns *time and data*; a
 `DecisionRule` owns *behaviour*.** Swapping the rule is the only change needed
-to move between the legacy heuristic and the DYNAMO-M science. This is the
+to move between the threshold heuristic and the DYNAMO-M science. This is the
 Strategy pattern, and it is what keeps the numeric kernel single-sourced.
 
 ```mermaid
@@ -201,7 +201,7 @@ classDiagram
 | `_core/dynamo_decision_bridge.py` | Internal data layer, the ported SEU kernels, the interpolation cache |
 | `agent_state.py` | Vectorised per-agent state |
 | `event_utils.py` | The unified stochastic event draw |
-| `coupling_config.py` | Configuration dataclasses, including the `legacy()` presets |
+| `coupling_config.py` | Configuration dataclasses |
 | `income_utils.py` | Case-study income-percentile helpers |
 | `mesa_native_full.py` | The preferred driver: a real honeybees `Model` owns the clock |
 | `mesa_native.py` | Framework-free mirror of the tick loop (verification) |
@@ -363,12 +363,15 @@ from floodadapt_abm import CouplingConfig
 config = CouplingConfig()                       # current defaults
 config.decision.nuisance_freq_threshold = 1.0   # recommended for Charleston
 
-legacy = CouplingConfig.legacy()                # pre-refactor behaviour, bit-exact
+# Pre-review alternatives, named explicitly (see section 11)
+config.decision.event_draw_mode = "bernoulli_clip"
+config.decision.perception_mode = "binary"
 ```
 
 `CouplingConfig` holds `DecisionConfig` (behaviour) and `NetCDFMappingConfig`
-(schema strings). `CouplingConfig.legacy()` reproduces the historical behaviour
-bit-exactly and is pinned by a golden regression test.
+(schema strings). The `CouplingConfig.legacy()` preset was retired in 2026-08;
+each behaviour switch still accepts its pre-review alternative, so name the
+ones you want instead of pinning a bundle.
 
 ## 6. Performance and scaling
 
@@ -398,10 +401,10 @@ it can differ between SciPy builds and between NumPy promotion regimes
 (NEP 50). Interpolated damages routinely land within one `float32` unit in the
 last place of a rounding boundary, so such a difference flips stored damages by
 a single ulp. That is invisible scientifically but fatal to the bit-parity
-contract, and it produced golden-regression failures that reproduced on CI
+contract, and it produced bit-parity failures that reproduced on CI
 runners while passing on developer machines. `_linear_at_slr` therefore fixes
 every intermediate dtype explicitly: the y-difference is taken at the cube's
-own `float32` precision (which is what the golden arrays encode), and the
+own `float32` precision, and the
 division and affine step run in `float64`. The kernel then depends only on
 IEEE-754 add, subtract, multiply and divide, which are exactly rounded and so
 identical on every platform. `cubic` still delegates to SciPy, and is not
@@ -561,8 +564,8 @@ flood per year against a fixed return-period set.
 The **legacy** draw (one Bernoulli trial per event with `p = min(freq·dt, 1)`
 and a random cap of 4) clipped sub-annual events to certainty and discarded
 rare extremes at the same rate as nuisance floods. It is preserved bit-exactly
-under `CouplingConfig.legacy()` for reproducing historical results, and its RNG
-call order must never be changed.
+as the `"bernoulli_clip"` option, which notebook 2 uses for its matched-hazard
+comparison, and its RNG call order must never be changed.
 
 **Nuisance filter.** For event sets containing sub-annual events (the
 Charleston set has about 11), set `nuisance_freq_threshold = 1.0`. Those events
@@ -653,8 +656,24 @@ perc  = np.array([0, 20, 40, 60, 80, 100])        # income percentile
 ratio = np.array([0, 1.06, 4.14, 4.19, 5.24, 6])  # wealth / income multiplier
 ```
 
-The bridge simplifies this to one configurable value,
-`DecisionConfig.income_to_wealth_ratio` (default `4.14`, the 40th percentile).
+The bridge uses that table in full. Under the default
+`income_mode="synthetic_lognormal"` it interpolates all six anchor points at
+each household's income percentile
+(`DynamoDecisionBridge._WEALTH_RATIO_PERCENTILES` / `_WEALTH_RATIO_VALUES`),
+exactly as native does, so richer households hold proportionally more wealth.
+
+The scalar `DecisionConfig.income_to_wealth_ratio` (default `4.14`, the 40th
+percentile) is a *separate* path. It applies only when a caller supplies an
+explicit `income_per_agent` array without a matching `wealth_per_agent`. It is
+not used by the default mode.
+
+**These six numbers are not calibrated.** They are inherited from native
+DYNAMO-M, whose source documents them only with the inline comment
+"wealth in relation to income" and gives no citation. Nothing about them is
+specific to Charleston or to any other study area. Changing them breaks
+bit-parity with native, so treat them as a sensitivity target rather than a
+free parameter, and see `docs/calibration_validation_guide.md` for how they sit
+alongside the parameters that *are* measured.
 
 ### 9.6 Submodel: the SEU decision
 
@@ -758,7 +777,6 @@ are enforced:
 ```
 engine.run(...) = run_mesa_native(...) = run_mesa_native_full(...)    bit-for-bit
 SEURule EU values = native DYNAMO-M DecisionModule EU values          rel. err < 1e-4
-CouplingConfig.legacy() runs = pre-refactor behaviour                 bit-for-bit
 ```
 
 Any change to `SimulationEngine.step`, the event draw or the SEU kernels must
@@ -772,13 +790,23 @@ Verification means checking that the code does what the equations say.
 - `pytest tests/ -q` runs the whole suite, including every parity gate. Tests
   auto-skip when an optional dependency is missing, and that guard is itself
   under test.
-- `tests/test_legacy_mode.py` is the **golden wall**: if it fails, fix the
-  leak, never re-capture the reference.
 - `verification/` holds re-runnable harnesses with full reports and metrics
   (`phase1_seu_battery`, `phase4a_parity`, `phase4b_mesa_native`,
-  `real_table_gate`, `mesa_native_full`). They are pinned to
-  `CouplingConfig.legacy()`; set `FA_ABM_HARNESS_CONFIG=new` to re-run them
-  under current defaults.
+  `real_table_gate`, `mesa_native_full`). They run under the current package
+  defaults.
+
+**Retired 2026-08: the legacy-reproduction layer.** A third contract used to
+sit alongside the two above: `CouplingConfig.legacy()` runs reproduced
+pre-2026-07 behaviour bit-for-bit, pinned by a golden regression
+(`tests/test_legacy_mode.py`, checked against a stored `.npz` captured from the
+pre-refactor kernels). That contract, its preset, its golden file and the
+`FA_ABM_HARNESS_CONFIG` switch were all removed once reproducing the old
+behaviour stopped being a requirement. The alternative algorithms themselves
+survive as ordinary config options. The one piece deleted outright is
+`income_mode="mpd_ratio"`: it made income and adaptation cost both
+proportional to `max_pot_dmg`, so the affordability gate reduced to a single
+population-wide constant (measured at 1.6887 for every household) and never
+bound for anybody.
 
 ## 12. Validation status
 
@@ -835,6 +863,8 @@ knobs, income synthesis) are inventoried in the method guide.
 | **Lookup table (LUT)** | The precomputed `.nc` impact table joining stage 1 to stage 2 |
 | **Household** | One residential building, one `object_id`, one agent |
 | **Actuarially fair** | Priced exactly at expected cost, with no margin |
+| **Bit-parity gate** | A test asserting two code paths produce *byte-identical* arrays, not merely close ones; used to prove the drivers are wrappers around one kernel |
+| **Golden wall** *(retired 2026-08)* | The former bit-exact legacy regression: `tests/test_legacy_mode.py` compared runs under `CouplingConfig.legacy()` against arrays stored in `tests/data/golden_legacy_mock.npz`, captured from the pre-refactor kernels. The rule was "if it fails, fix the leak, never re-capture the file". Retired with the legacy-reproduction layer (§11); the term survives in the git history and in `docs/progress/` |
 
 # Appendix B. Deviations from native DYNAMO-M
 

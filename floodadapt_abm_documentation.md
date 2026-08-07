@@ -188,38 +188,43 @@ DYNAMO-M `settings.yml`:
 | `expenditure_cap` | `0.06` | max fraction of income spendable on adaptation |
 | `amenity_weight` | `1.0` | weight on amenity value in NPV |
 | `error_interval` | `0.0` | half-width of uniform EU error (0 → deterministic) |
-| `income_to_wealth_ratio` | `4.14` | income→wealth multiplier (legacy `mpd_ratio` mode) |
-| `max_events_per_year` | `None` | occurrence cap per year (legacy preset: `4`; see Sec.6) |
+| `income_to_wealth_ratio` | `4.14` | income→wealth multiplier, explicit-income runs only (the default mode interpolates the full percentile table) |
+| `max_events_per_year` | `None` | occurrence cap per year (pre-review value: `4`; see Sec.6) |
 | `lifespan_dryproof` | `75` | dry-floodproofing service life (years); triggers reset |
-| `event_draw_mode` | `"poisson"` | hazard draw: `"poisson"` (exact rates) / `"bernoulli_clip"` (legacy) |
+| `event_draw_mode` | `"poisson"` | hazard draw: `"poisson"` (exact rates) / `"bernoulli_clip"` (pre-review) |
 | `nuisance_freq_threshold` | `None` | drop events with `freq >` threshold from the whole catalogue (set `1.0` for the Charleston set) |
-| `cap_policy` | `"largest_damage"` | surplus-occurrence discard: keep most damaging (deterministic) / `"random"` (legacy) |
-| `seu_prob_mode` | `"exceedance"` | SEU probabilities: `p = 1 − e^(−freq)` / `"raw_freq"` (legacy) |
-| `perception_mode` | `"severity"` | post-flood spike scales with damage severity / `"binary"` (legacy & native) |
-| `flood_significance_threshold` | `0.01` | min damage severity to register as flood experience (legacy `0.0`) |
+| `cap_policy` | `"largest_damage"` | surplus-occurrence discard: keep most damaging (deterministic) / `"random"` (pre-review) |
+| `seu_prob_mode` | `"exceedance"` | SEU probabilities: `p = 1 − e^(−freq)` / `"raw_freq"` (pre-review) |
+| `perception_mode` | `"severity"` | post-flood spike scales with damage severity / `"binary"` (pre-review & native) |
+| `flood_significance_threshold` | `0.01` | min damage severity to register as flood experience (pre-review `0.0`) |
 | `perception_severity_form` | `"power"` | severity→peak form: `"power"` / `"saturating_exp"` / `"threshold_linear"` (one parameter each; see below) |
 | `perception_severity_exponent` | `0.5` | `"power"`: concave severity exponent γ (γ→0 binary, γ=1 linear) |
 | `perception_severity_rate` | `3.0` | `"saturating_exp"`: rate k > 0 (larger k saturates faster) |
 | `perception_severity_threshold` | `0.1` | `"threshold_linear"`: damage severity s0 in [0, 1) below which no spike occurs |
-| `income_mode` | `"synthetic_lognormal"` | native income port / `"mpd_ratio"` (legacy, from building value) |
+| `income_mode` | `"synthetic_lognormal"` | native income port; the only supported value (`"mpd_ratio"` was removed, see below) |
 | `median_income` | `70000.0` | regional median income for the synthetic distribution (site-specific) |
 | `mean_median_inc_ratio` | `1.15` | lognormal spread (native UN-WIID fallback) |
-| `adaptation_total_cost` | `None` | fixed per-household cost (native style); `None` → `fraction·max_pot_dmg` (legacy) |
+| `adaptation_total_cost` | `None` | fixed per-household cost (native style); `None` → `fraction·max_pot_dmg` |
 | `include_insurance` | `False` | offer insurance as a third decision option (matches native default) |
 | `insurance_deductible` | `0.1` | damage share still borne when insured (native hard-coded value) |
 | `insurance_pricing` | `"community"` | premium rating: `"community"` = flat mean-EAD rate (native `InsurerAgent`) / `"risk_based"` = each household's own expected payout `(1-deductible)*EAD_i` |
 | `insurance_loading` | `1.0` | multiplier on the actuarial premium (insurer margin); `1.0` = fair |
 | `insurance_subsidy` | `0.0` | fraction of the premium paid by a public scheme (premium analogue of native's adaptation subsidy) |
 
-`DecisionConfig.legacy()` / `CouplingConfig.legacy()` pin every behaviour switch to the
-pre-2026-07-review values **bit-exactly** (golden regression: `tests/test_legacy_mode.py`).
+**Retired 2026-08.**  The `DecisionConfig.legacy()` / `CouplingConfig.legacy()` presets
+and the golden regression that pinned them (`tests/test_legacy_mode.py`) were removed;
+there is no longer a bit-exact "reproduce pre-2026-07 behaviour" contract.  Each switch
+still accepts its pre-review alternative, so name the ones you want explicitly.  The
+`income_mode="mpd_ratio"` fallback was removed outright and now raises: income and
+adaptation cost were both proportional to `max_pot_dmg`, so the affordability gate
+reduced to one population-wide constant and never bound for any household.
 
 Risk-perception law:
 `risk_perc = peak · 1.6^(risk_perc_coef · flood_timer) + risk_perc_min`,
 where `peak = risk_perc_max` in binary mode and, in severity mode with
 severity `s = realised/max_pot_dmg` clipped to [0, 1]:
 
-- `"power"`: `peak = risk_perc_max · s^γ` (default; total loss = full legacy spike),
+- `"power"`: `peak = risk_perc_max · s^γ` (default; total loss = full binary-mode spike),
 - `"saturating_exp"`: `peak = risk_perc_max · (1 − e^(−k·s)) / (1 − e^(−k))`,
 - `"threshold_linear"`: `peak = risk_perc_max · clip((s − s0)/(1 − s0), 0, 1)`.
 
@@ -395,10 +400,10 @@ The **single** stochastic event generator.
     year, and nothing is clipped or discarded.
   - `mode="bernoulli_clip"` (legacy): one Bernoulli trial per event with
     `p = min(freq·dt, 1)` — rates above `1/dt` are clipped to certainty (the defect
-    identified in the 2026-07 review; retained bit-exactly for `legacy()`).
+    identified in the 2026-07 review; retained bit-exactly as an option).
   - When a cap binds, `cap_policy="largest_damage"` keeps the most damaging
     occurrences deterministically (requires `event_severity`); `"random"` is the
-    legacy uniform discard.
+    pre-review uniform discard.
 - `generate_event_sequences(...)` — `n_seq` independent per-year event sequences
   (same parameters).
 
@@ -592,7 +597,7 @@ The SLR→damage interpolation kernel:
   promotion of that mix is not stable across SciPy builds or NumPy promotion
   regimes, which flipped stored damages by one ulp and broke the bit-parity
   gates on some platforms. This helper takes the y-difference at `float32` (the
-  historical semantics the golden arrays encode) and runs the division and
+  historical semantics) and runs the division and
   affine step at `float64`, so results are identical on every platform. Do not
   route the `linear` branch back through SciPy; `tests/test_lookup_interpolation.py`
   asserts it imports none. `cubic` still uses SciPy and carries no parity gate.
@@ -790,6 +795,29 @@ are available.
 Four helpers calibrate and validate the regional income distribution.  They
 need no geometry, no geopandas and no new dependency (stdlib `urllib` plus
 scipy).  A free Census Data API key is read from `CENSUS_API_KEY`.
+
+**Why a lognormal, and what the two numbers do.**  Regional income is modelled
+as lognormal (`log(income) ~ Normal(mu, sigma)`), the standard choice because
+income is right-skewed: most households sit below the average and a thin tail
+of high earners pulls the average up.  ACS publishes statistics, not `mu` and
+`sigma`, so the code converts.  The **median** is the middle household; the
+**mean** is total income over households, which a few rich households lift
+above the median.  Both conversions are exact for a lognormal:
+`mu = ln(median)` and `sigma = sqrt(2 ln(mean/median))`.  The pair is
+therefore *median plus mean/median ratio*, not *mean plus standard
+deviation*: the median fixes the centre and the ratio fixes the spread, and
+the ratio is the one that moves results.  `_synthesize_income_wealth`
+(`_core/dynamo_decision_bridge.py`) draws 5,000 sorted samples from it once
+per run on a dedicated seed-derived generator; each household reads its income
+off that curve at its own percentile, wealth follows via the native
+wealth-to-income table, and both feed the `expenditure_cap` affordability
+check.  Charleston: ratio 1.4879 gives `sigma = 0.892`, against 0.529 for the
+default 1.15.
+
+**Neither fetcher caches.**  Each call issues a fresh HTTP request; there is no
+disk cache and no memoisation, so an offline run cannot fetch and callers should
+pin the values they get (notebook 2 pins them as constants and re-fetches only
+to report drift).
 
 Calibration fits exactly two parameters (`median_income`,
 `mean_median_inc_ratio`, which map to the lognormal's `mu`/`sd`) from two

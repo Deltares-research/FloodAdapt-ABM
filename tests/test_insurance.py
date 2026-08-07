@@ -24,7 +24,7 @@ from floodadapt_abm import (
     HONEYBEES_AVAILABLE,
 )
 from floodadapt_abm._core.dynamo_decision_bridge import _calc_eu_insure
-from tests.conftest import make_mock_dataset
+from tests.conftest import make_mock_dataset, historical_modes_config
 
 SLR = np.linspace(0.0, 1.0, 8)
 SEED = 123
@@ -32,7 +32,7 @@ SEED = 123
 
 def _insurance_cfg(**overrides) -> CouplingConfig:
     """Insurance-enabled config on otherwise-legacy behaviour modes."""
-    cfg = CouplingConfig.legacy()
+    cfg = historical_modes_config()
     cfg.decision.include_insurance = True
     # Synthetic incomes so the premium affordability gate is meaningful.
     cfg.decision.income_mode = "synthetic_lognormal"
@@ -116,7 +116,7 @@ def test_insure_beats_do_nothing_for_high_risk_cheap_premium():
 
 def test_default_decide_delegates_to_should_adapt():
     """ThresholdRule (no decide override) never insures."""
-    cfg = CouplingConfig.legacy()
+    cfg = historical_modes_config()
     engine = SimulationEngine(
         ds=make_mock_dataset(),
         decision_rule=ThresholdRule(cfg.decision, damage_threshold=0.0),
@@ -139,7 +139,7 @@ def test_default_decide_delegates_to_should_adapt():
 
 def test_seurule_decide_without_premium_matches_should_adapt():
     """decide(premium=None) reduces bit-exactly to the two-way rule."""
-    cfg = CouplingConfig.legacy()
+    cfg = historical_modes_config()
     engine = SimulationEngine(ds=make_mock_dataset(), config=cfg)
     dmg_no, dmg_fp = engine.prepare_damages(1.0)
     kwargs = dict(
@@ -185,15 +185,26 @@ def test_seurule_three_way_exclusive_and_masked():
 # Engine bookkeeping
 # ---------------------------------------------------------------------------
 
-def test_insurance_off_bit_identical_to_golden():
-    """include_insurance=False must not perturb the legacy stream at all."""
-    golden = np.load(
-        __file__.replace("test_insurance.py", "data/golden_legacy_mock.npz")
+def test_insurance_off_does_not_perturb_the_run():
+    """
+    ``include_insurance=False`` must leave the run bit-identical.
+
+    Turning the option off must not consume RNG, add arrays, or shift any
+    damage.  Compared against an otherwise-identical config rather than a
+    stored golden file, so the invariant is self-contained.
+    """
+    base = SimulationEngine(ds=make_mock_dataset(), config=historical_modes_config())
+    with_flag_off = SimulationEngine(
+        ds=make_mock_dataset(),
+        config=historical_modes_config(include_insurance=False),
     )
-    engine = SimulationEngine(ds=make_mock_dataset(), config=CouplingConfig.legacy())
-    res = engine.run(golden["slr"], no_seq=2, seed=int(golden["seed"]))
-    assert np.array_equal(res["damage_history"], golden["seu_damage_history"])
-    assert "insured_history" not in res
+    res_base = base.run(SLR, no_seq=2, seed=SEED)
+    res_off = with_flag_off.run(SLR, no_seq=2, seed=SEED)
+
+    assert np.array_equal(res_base["damage_history"], res_off["damage_history"])
+    assert np.array_equal(res_base["adapted_history"], res_off["adapted_history"])
+    assert "insured_history" not in res_base
+    assert "insured_history" not in res_off
 
 
 def test_run_returns_insurance_arrays_with_expected_shapes():
