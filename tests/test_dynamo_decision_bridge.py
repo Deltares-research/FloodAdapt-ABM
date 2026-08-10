@@ -288,11 +288,26 @@ class TestPropertyCapping:
         dmg = bridge.get_current_damages("ev_000")
         assert np.all(dmg <= bridge.max_pot_dmg + 1e-3)
 
-    def test_wealth_consistent_with_income(
-        self, bridge: DynamoDecisionBridge
-    ) -> None:
-        """Wealth should equal income * income_to_wealth_ratio."""
-        expected_wealth = bridge.income * bridge.config.decision.income_to_wealth_ratio
+    def test_wealth_consistent_with_income(self, mock_ds) -> None:
+        """Explicit-income path: wealth == income * income_to_wealth_ratio.
+
+        This scalar is the *only* surviving use of
+        ``income_to_wealth_ratio``: it applies when a caller supplies
+        ``income_per_agent`` but no ``wealth_per_agent``.  The default
+        ``synthetic_lognormal`` mode ignores it and interpolates the
+        percentile-varying native table instead (covered in
+        ``test_income_model.py``).
+        """
+        types = np.asarray(
+            mock_ds["object_id"].attrs["primary_object_type"], dtype=str
+        )
+        n_res = int((np.char.find(types, "RES") >= 0).sum())
+        income = np.linspace(30_000.0, 90_000.0, n_res).astype(np.float32)
+
+        bridge = DynamoDecisionBridge(
+            ds=mock_ds, config=CouplingConfig(), income_per_agent=income
+        )
+        expected_wealth = income * bridge.config.decision.income_to_wealth_ratio
         np.testing.assert_allclose(bridge.wealth, expected_wealth, rtol=1e-4)
 
     def test_wealth_upper_bounded(self, bridge: DynamoDecisionBridge) -> None:

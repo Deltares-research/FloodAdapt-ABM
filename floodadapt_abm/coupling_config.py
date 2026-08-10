@@ -158,26 +158,200 @@ class DecisionConfig:
         introduce stochastic choice.  ``0.0`` disables stochastic errors.
         Default: ``0.0``.
     income_to_wealth_ratio : float
-        Multiplier converting annual income to household wealth when wealth
-        data are not available from the dataset.
-        Default: ``4.14`` (median ratio from DYNAMO-M income-wealth table,
-        corresponding to the 40th percentile).  Source:
+        Scalar multiplier converting annual income to household wealth,
+        used **only** when an explicit ``income_per_agent`` array is supplied
+        without a matching ``wealth_per_agent``.  The default
+        ``income_mode="synthetic_lognormal"`` path ignores it and
+        interpolates the full percentile-varying table instead
+        (``DynamoDecisionBridge._WEALTH_RATIO_*``).
+        Default: ``4.14`` (median ratio from the DYNAMO-M income-wealth
+        table, corresponding to the 40th percentile).  Source:
         ``decision_module.py`` lines 27-30, percentile table
         ``[0, 20, 40, 60, 80, 100]`` → ratio ``[0, 1.06, 4.14, 4.19, 5.24, 6]``.
-    max_events_per_year : int
-        Maximum number of stochastic flood events that can occur in a
-        single simulation year.  When the Bernoulli-trial draw yields
-        more events than this cap, the surplus events are dropped.
+        Those six numbers are inherited from native DYNAMO-M with no citation
+        beyond the comment "wealth in relation to income"; they are not
+        calibrated for any particular study area (see
+        ``docs/calibration_validation_guide.md``).
+    event_draw_mode : str
+        Stochastic model for the yearly flood-event draw.
 
-        .. note::
-           Cap-selection semantics are being unified (see
-           ``20260707_todo_next_steps``).  Historically the retained events
-           were the highest-frequency ones; the current example scripts
-           retain the highest-magnitude (largest expected-damage) events;
-           the agreed target is **random selection without replacement** from
-           the drawn pool, which preserves the Monte-Carlo distribution.
-           Whichever policy is active, the count is capped at this value.
-        Default: ``4``.
+        * ``"poisson"`` — each event occurs ``n_i ~ Poisson(freq_i * dt)``
+          times per year.  Statistically exact for occurrence *rates*: the
+          realised long-run rate of every event (including sub-annual
+          ``freq > 1`` events and rare extremes) equals its nominal
+          frequency, and one event may occur several times in a year.
+        * ``"bernoulli_clip"`` — legacy behaviour: one Bernoulli trial per
+          event with ``p = min(freq_i * dt, 1)``.  Rates above ``1/dt`` are
+          clipped to certainty, so sub-annual events occur every year and
+          (combined with ``max_events_per_year``) crowd out extremes.
+          Retained for reproducing historical results only.
+        Default: ``"poisson"``.
+    nuisance_freq_threshold : float or None
+        When set, events with ``freq > threshold`` (events/year) are dropped
+        from the catalogue once at data load — from both the hazard draw and
+        the SEU decision integral, which therefore always see the same event
+        set.  ``1.0`` reproduces the historical pre-coupling setup that
+        disregarded sub-annual "nuisance" events entirely, and is the
+        recommended setting for event sets containing ``freq > 1`` entries
+        (their near-certain probabilities otherwise collapse onto the 0.998
+        perceived-probability cap inside the SEU integral).
+        ``None`` keeps every event.
+        Default: ``None``.
+    max_events_per_year : int or None
+        Maximum number of stochastic flood-event occurrences retained in a
+        single simulation year; ``None`` disables the cap (recommended with
+        ``"poisson"`` — realised damage is already bounded by
+        ``max_pot_dmg``, and any discard biases the hazard statistics).
+        Default: ``None``.
+    cap_policy : str
+        How surplus occurrences are discarded when ``max_events_per_year``
+        binds.
+
+        * ``"largest_damage"`` — keep the most damaging occurrences
+          (deterministic, no extra RNG; preserves extremes).
+        * ``"random"`` — legacy: uniform random selection without
+          replacement (extremes are discarded at the same rate as nuisance
+          events).
+        Default: ``"largest_damage"``.
+    seu_prob_mode : str
+        How event frequencies are converted into the exceedance
+        probabilities fed to the SEU expected-utility integral.
+
+        * ``"exceedance"`` — ``p_i = 1 - exp(-freq_i * dt)``, the exact
+          probability of at least one occurrence of a Poisson arrival with
+          rate ``freq_i``; always < 1, consistent with the exceedance-curve
+          semantics of the integral.
+        * ``"raw_freq"`` — legacy: ``p_i = freq_i`` used directly (valid
+          only while every frequency is well below 1).
+        Default: ``"exceedance"``.
+    perception_mode : str
+        How a realised flood feeds the risk-perception spike.
+
+        * ``"severity"`` — the post-flood perception peak scales with the
+          damage severity ``s = realised / max_pot_dmg`` through the power
+          law ``s ** perception_severity_exponent``, so a nuisance flood
+          and a catastrophe are no longer identical to the agent.  A
+          deliberate improvement beyond native DYNAMO-M, whose trigger is
+          binary (``flood_risk.py:619``).
+        * ``"binary"`` — legacy/native: any positive damage produces the
+          full ``risk_perc_max`` spike.
+        Default: ``"severity"``.
+    flood_significance_threshold : float
+        Minimum damage severity (fraction of ``max_pot_dmg``) for a flood to
+        register as experienced — resets the flood timer and spikes risk
+        perception.  ``0.0`` reproduces the legacy ``realised > 0`` trigger
+        (where float round-off or a residual post-adaptation trickle counts
+        as a flood).
+        Default: ``0.01``.
+    perception_severity_form : str
+        Functional form mapping damage severity ``s = realised /
+        max_pot_dmg`` (clipped to [0, 1]) to the post-flood perception peak
+        under ``perception_mode="severity"``.  ``"power"`` is the **only**
+        supported value: ``peak = risk_perc_max * s ** gamma`` with
+        ``gamma = perception_severity_exponent``.  See ``docs/architecture.md`` ("Severity response").
+        Default: ``"power"``.
+    perception_severity_exponent : float
+        Exponent ``gamma > 0`` of the severity scaling:
+        ``peak = risk_perc_max * clip(severity, 0, 1) ** gamma``.  This is
+        the single shape parameter of the perception response, and it spans
+        the whole hypothesis range:
+
+        * ``gamma -> 0`` — approaches the binary/native response (any flood
+          gives the full spike).  ``gamma = 0`` exactly is **rejected**:
+          ``0.0 ** 0.0 == 1.0`` would spike every agent, including those
+          that never flooded.  Use ``perception_mode="binary"`` for the
+          exact native behaviour.
+        * ``gamma < 1`` — concave (availability heuristic): small floods
+          already spike perception strongly.  ``gamma = 0.5`` (default)
+          gives a 25 %-damage flood 50 % of the maximum spike, and a
+          50 %-damage flood ~71 %.
+        * ``gamma = 1`` — linear, the damage-proportional response.
+        * ``gamma > 1`` — convex (near-miss hypothesis): small floods are
+          largely ignored.  ``gamma = 2`` gives a 10 %-damage flood only
+          1 % of the spike.
+
+        Calibratable, and the parameter a sensitivity sweep should vary.
+        Default: ``0.5``.
+    income_mode : str
+        Fallback used to construct per-agent incomes when no
+        ``income_per_agent`` array is supplied.  ``"synthetic_lognormal"``
+        is the only supported value.
+
+        * ``"synthetic_lognormal"`` — port of the native DYNAMO-M pipeline:
+          a regional lognormal income distribution is built from
+          ``median_income`` and ``mean_median_inc_ratio``, each household
+          samples it at its income percentile, and wealth follows the
+          percentile-varying wealth-to-income table
+          (``DynamoDecisionBridge._WEALTH_RATIO_*``).  Income is independent
+          of building value, so the affordability constraint can genuinely
+          bind.
+
+        The former ``"mpd_ratio"`` mode was **removed** (2026-08).  It set
+        ``income = max_pot_dmg / income_to_wealth_ratio``, so wealth cancelled
+        back to exactly the building value and both sides of the
+        affordability test became proportional to ``max_pot_dmg``.  The gate
+        therefore collapsed to a single global constant and never bound for
+        any household, which defeats the purpose of modelling income.
+        Passing it now raises a directed ``ValueError``.
+        Default: ``"synthetic_lognormal"``.
+    median_income : float
+        Regional median gross household income used by
+        ``income_mode="synthetic_lognormal"`` (same role as the GDL/World-
+        Bank regional income in native DYNAMO-M ``base_nodes.py:37-76``).
+        Site-specific; override per case study.
+        Default: ``70_000.0`` (Charleston-area order of magnitude, USD).
+    mean_median_inc_ratio : float
+        Mean-to-median income ratio controlling the spread (sigma) of the
+        synthetic lognormal income distribution.  Native DYNAMO-M reads this
+        from the UN WIID per country with fallback ``1.15``
+        (``settings.yml`` ``adaptation.mean_median_inc_ratio``).
+        Default: ``1.15``.
+    adaptation_total_cost : float or None
+        Fixed one-off dry-floodproofing cost per household (currency units
+        of the lookup table).  Mirrors native DYNAMO-M, where the cost is a
+        country-scaled constant (10,800 EUR France-anchored,
+        ``prepare_scale_to_GDP.py``) rather than a fraction of property
+        value.  ``None`` falls back to the legacy
+        ``adaptation_cost_fraction * max_pot_dmg``.
+        Default: ``None`` (legacy).
+    include_insurance : bool
+        Offer flood insurance as a third decision option (ported
+        ``calcEU_insure``; flat community premium = mean expected annual
+        damage, as in native ``insurer_agent.py``).  ``False`` matches the
+        native DYNAMO-M default (``settings.yml`` ``include_insurance``).
+        Default: ``False``.
+    insurance_deductible : float
+        Fraction of flood damage still borne by an insured household (the
+        native module hard-codes ``deductable = 0.1``,
+        ``decision_module.py:259``).
+        Default: ``0.1``.
+    insurance_pricing : str
+        How the insurer prices the annual premium.
+
+        * ``"community"`` — native behaviour: one **flat** community-rated
+          premium for everybody, equal to the *mean* expected annual damage
+          of the node (``insurer_agent.py:20-26``).  Over a skewed risk pool
+          this prices the median household far above its own risk (on the
+          real Charleston table the flat premium ends up above the
+          expenditure cap of most households, so uptake stays near 0 %).
+        * ``"risk_based"`` — each household is charged its **own** expected
+          annual damage.  This is the standard actuarially-fair premium; it
+          makes the premium heterogeneous, affordable for the low-risk
+          majority, and lets the SEU comparison (not the affordability cap)
+          drive uptake.  Beyond native, which has no risk-based insurer.
+        Default: ``"community"`` (native).
+    insurance_loading : float
+        Multiplier applied to the actuarially-fair premium to represent the
+        insurer's expenses, capital costs and margin.  ``1.0`` is a fair
+        premium; ``1.3`` a 30 % loading.  Applied under both pricing modes.
+        Default: ``1.0``.
+    insurance_subsidy : float
+        Fraction of the premium paid by a public scheme rather than the
+        household (the premium analogue of native's
+        ``subsidize_adaptation_costs``, ``government_agent.py:572-576``,
+        which halves adaptation costs for constrained households).  ``0.0``
+        disables it; ``0.5`` halves the household's premium.  Beyond native.
+        Default: ``0.0``.
     lifespan_dryproof : int
         Service life of a dry-floodproofing measure in years.  Adapted
         households whose adaptation age (``time_adapted``) reaches this value
@@ -202,8 +376,29 @@ class DecisionConfig:
     amenity_weight: float = 1.0
     error_interval: float = 0.0
     income_to_wealth_ratio: float = 4.14
-    max_events_per_year: int = 4
+    max_events_per_year: int | None = None
     lifespan_dryproof: int = 75
+
+    # -- Behaviour-mode switches (see class docstring for semantics) --------
+    # Each switch also accepts the pre-2026-07 alternative, kept as an
+    # ordinary option for sensitivity work (see the class docstring).
+    event_draw_mode: str = "poisson"
+    nuisance_freq_threshold: float | None = None
+    cap_policy: str = "largest_damage"
+    seu_prob_mode: str = "exceedance"
+    perception_mode: str = "severity"
+    flood_significance_threshold: float = 0.01
+    perception_severity_form: str = "power"
+    perception_severity_exponent: float = 0.5
+    income_mode: str = "synthetic_lognormal"
+    median_income: float = 70_000.0
+    mean_median_inc_ratio: float = 1.15
+    adaptation_total_cost: float | None = None
+    include_insurance: bool = False
+    insurance_deductible: float = 0.1
+    insurance_pricing: str = "community"
+    insurance_loading: float = 1.0
+    insurance_subsidy: float = 0.0
 
 
 # ---------------------------------------------------------------------------

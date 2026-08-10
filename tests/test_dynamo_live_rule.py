@@ -216,3 +216,80 @@ class TestEngineIntegration:
             r_seu["adoption_fraction"], r_live["adoption_fraction"],
             rtol=0, atol=0,
         )
+
+
+# ===========================================================================
+# 4. Insurance parity (ported _calc_eu_insure vs native calcEU_insure)
+# ===========================================================================
+@requires_dynamo
+class TestInsuranceParity:
+    """The insurance oracle: ported kernel == native module, and the two
+    rules' three-way decisions agree on a shared state."""
+
+    def _shared_setup(self, mock_ds_factory):
+        cfg = CouplingConfig()
+        cfg.decision.include_insurance = True
+        engine = _make_engine(mock_ds_factory, cfg)
+        state = engine.state
+        premium = np.full(state.n_agents, 500.0, dtype=np.float32)
+        kwargs = _decision_kwargs(engine, state)
+        kwargs["insurance_premium"] = premium
+        return cfg, engine, state, kwargs
+
+    def test_insure_eu_matches_native(self, mock_ds_factory):
+        cfg, engine, state, kwargs = self._shared_setup(mock_ds_factory)
+        # Spread risk perception so the EU surface is non-trivial.
+        state.risk_perception[:] = np.linspace(
+            0.01, 2.0, state.n_agents
+        ).astype(np.float32)
+
+        seu = SEURule(cfg.decision, rng=np.random.default_rng(0))
+        live = DynamoLiveRule(cfg.decision, rng=np.random.default_rng(0))
+
+        seu.decide(**kwargs)
+        live.decide(**kwargs)
+
+        assert seu.last_eu_insure is not None
+        assert live.last_eu_insure is not None
+        _finite_equal(seu.last_eu_insure, live.last_eu_insure)
+
+    def test_three_way_decisions_match_native(self, mock_ds_factory):
+        cfg, engine, state, kwargs = self._shared_setup(mock_ds_factory)
+        state.risk_perception[:] = np.linspace(
+            0.01, 2.0, state.n_agents
+        ).astype(np.float32)
+        # A few pre-adapted agents to exercise the sticky-floodproofing mask.
+        state.is_adapted[:5] = True
+
+        seu = SEURule(cfg.decision, rng=np.random.default_rng(0))
+        live = DynamoLiveRule(cfg.decision, rng=np.random.default_rng(0))
+
+        actions_seu = seu.decide(**kwargs)
+        actions_live = live.decide(**kwargs)
+
+        assert np.array_equal(actions_seu, actions_live)
+
+    def test_engine_run_with_insurance_seu_vs_live(self, mock_ds_factory):
+        """Full-run three-way parity through the engine."""
+        cfg = CouplingConfig()
+        cfg.decision.include_insurance = True
+        ds = mock_ds_factory(n_objects=30, n_events=6, seed=6)
+
+        eng_seu = SimulationEngine(ds=ds, config=cfg)  # SEURule default
+        eng_live = SimulationEngine(
+            ds=ds, config=cfg, decision_rule=DynamoLiveRule(cfg.decision)
+        )
+
+        slr = np.linspace(0.0, 1.5, 10)
+        r_seu = eng_seu.run(slr, no_seq=2, seed=123)
+        r_live = eng_live.run(slr, no_seq=2, seed=123)
+
+        assert np.array_equal(
+            r_seu["adapted_history"], r_live["adapted_history"]
+        )
+        assert np.array_equal(
+            r_seu["insured_history"], r_live["insured_history"]
+        )
+        assert np.array_equal(
+            r_seu["out_of_pocket_history"], r_live["out_of_pocket_history"]
+        )

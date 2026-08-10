@@ -45,6 +45,14 @@ class AgentState:
         reset when the measure expires (``>= lifespan_dryproof``) and the agent
         un-adapts.  This is the field that enables the lifespan-dryproof reset
         absent from the original bridge.
+    last_flood_severity : np.ndarray[float32]
+        Damage severity (``realised / max_pot_dmg``, in ``[0, 1]``) of each
+        agent's most recent significant flood.  ``0`` for agents never
+        flooded.  Used by ``perception_mode="severity"`` to scale the
+        post-flood risk-perception peak; ignored in binary mode.
+    is_insured : np.ndarray[bool]
+        Current flood-insurance status per agent (re-decided every year).
+        Always ``False`` while ``include_insurance`` is off.
     """
 
     wealth: np.ndarray
@@ -53,6 +61,16 @@ class AgentState:
     flood_timer: np.ndarray
     is_adapted: np.ndarray
     time_adapted: np.ndarray
+    last_flood_severity: np.ndarray | None = None
+    is_insured: np.ndarray | None = None
+
+    def __post_init__(self) -> None:
+        """Default the newer state arrays for backward-compatible construction."""
+        n = int(self.wealth.shape[0])
+        if self.last_flood_severity is None:
+            self.last_flood_severity = np.zeros(n, dtype=np.float32)
+        if self.is_insured is None:
+            self.is_insured = np.zeros(n, dtype=bool)
 
     @property
     def n_agents(self) -> int:
@@ -94,6 +112,8 @@ class AgentState:
             flood_timer=np.full(n_agents, initial_flood_timer, dtype=np.int32),
             is_adapted=np.zeros(n_agents, dtype=bool),
             time_adapted=np.zeros(n_agents, dtype=np.int32),
+            last_flood_severity=np.zeros(n_agents, dtype=np.float32),
+            is_insured=np.zeros(n_agents, dtype=bool),
         )
 
     def copy(self) -> "AgentState":
@@ -105,4 +125,6 @@ class AgentState:
             flood_timer=self.flood_timer.copy(),
             is_adapted=self.is_adapted.copy(),
             time_adapted=self.time_adapted.copy(),
+            last_flood_severity=self.last_flood_severity.copy(),
+            is_insured=self.is_insured.copy(),
         )

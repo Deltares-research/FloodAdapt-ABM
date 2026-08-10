@@ -75,8 +75,6 @@ def interpolate_damage_at_slr(
     ValueError
         If method is unknown or cubic is requested with fewer than 4 SLR points.
     """
-    from scipy.interpolate import interp1d  # optional heavy dependency
-
     slr_arr: np.ndarray = ds[dim_slr].values.astype(np.float64)
 
     # Slice the strategy dimension and transpose to (n_objects, n_slr, n_events)
@@ -137,6 +135,81 @@ def materialize_strategy_cube(
     return values, slr_arr
 
 
+def _linear_at_slr(
+    values: np.ndarray,
+    slr_arr: np.ndarray,
+    slr_target: float,
+) -> np.ndarray:
+    """
+    Linearly interpolate a damage cube along the SLR axis, dtype-pinned.
+
+    This reproduces ``scipy.interpolate.interp1d(kind="linear", axis=1,
+    fill_value="extrapolate")`` bit-for-bit, but fixes every intermediate
+    dtype explicitly instead of relying on NumPy/SciPy promotion rules.
+
+    Why this is hand-rolled rather than delegated to SciPy: the damage cube is
+    ``float32`` while the SLR grid is ``float64``, so the result depends on
+    *where* SciPy's legacy ``interp1d`` promotes.  That promotion is an
+    implementation detail of a deprecated API and is not guaranteed stable
+    across SciPy builds or NumPy promotion regimes (NEP 50).  Interpolated
+    damages routinely land within one ``float32`` unit in the last place of a
+    rounding boundary, so a promotion difference flips stored damages by one
+    ulp and breaks the golden bit-parity regression on some platforms while
+    passing on others.  Pinning the dtypes here makes the kernel depend only
+    on IEEE-754 add/subtract/multiply/divide, which are exactly rounded and
+    therefore identical on every platform.
+
+    The y-difference is deliberately taken at the cube's own ``float32``
+    precision (matching the historical SciPy path, hence the golden values);
+    the division and the affine step run in ``float64``.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        Damage cube, shape ``(n_agents, n_slr, n_events)``.
+    slr_arr : np.ndarray[float64]
+        SLR grid, shape ``(n_slr,)``.  Sorted internally if needed.
+    slr_target : float
+        SLR value to interpolate at.  Values outside the grid are
+        extrapolated from the nearest bracketing interval.
+
+    Returns
+    -------
+    np.ndarray[float64]
+        Shape ``(n_agents, n_events)``.
+
+    Raises
+    ------
+    ValueError
+        If the SLR grid has fewer than two points.
+    """
+    x: np.ndarray = np.asarray(slr_arr, dtype=np.float64)
+    if x.size < 2:
+        raise ValueError(
+            f"Linear interpolation requires at least 2 SLR grid points; "
+            f"lookup table has {x.size}."
+        )
+
+    # ``interp1d`` sorts its abscissa unless told otherwise; mirror that so a
+    # descending or unordered SLR axis yields the same answer as before.
+    if np.any(np.diff(x) < 0):
+        order: np.ndarray = np.argsort(x)
+        x = x[order]
+        values = values[:, order, :]
+
+    # Bracketing interval, clipped so out-of-range targets extrapolate along
+    # the nearest edge segment (``searchsorted`` side='left', as in interp1d).
+    idx: int = int(np.searchsorted(x, slr_target))
+    idx = min(max(idx, 1), x.size - 1)
+    lo, hi = idx - 1, idx
+
+    y_lo: np.ndarray = values[:, lo, :]
+    y_hi: np.ndarray = values[:, hi, :]
+
+    slope: np.ndarray = (y_hi - y_lo).astype(np.float64) / np.float64(x[hi] - x[lo])
+    return slope * np.float64(slr_target - x[lo]) + y_lo.astype(np.float64)
+
+
 def interpolate_cube_at_slr(
     values: np.ndarray,
     slr_arr: np.ndarray,
@@ -153,19 +226,17 @@ def interpolate_cube_at_slr(
     :func:`interpolate_damage_at_slr` (which now delegates here), so results are
     bit-for-bit unchanged.
     """
-    from scipy.interpolate import interp1d  # optional heavy dependency
-
     slr_arr = np.asarray(slr_arr, dtype=np.float64)
 
     # --- Interpolate along SLR axis (axis=1) ---------------------------------
     if method == "linear":
-        f = interp1d(
-            slr_arr, values, kind="linear",
-            axis=1, bounds_error=False, fill_value="extrapolate",
-        )
-        interpolated: np.ndarray = f(slr_target).astype(np.float32)
+        interpolated: np.ndarray = _linear_at_slr(
+            values, slr_arr, float(slr_target)
+        ).astype(np.float32)
 
     elif method == "cubic":
+        from scipy.interpolate import interp1d  # optional heavy dependency
+
         if len(slr_arr) < 4:
             raise ValueError(
                 f"Cubic interpolation requires at least 4 SLR grid points; "

@@ -55,3 +55,37 @@ def test_custom_initial_flood_timer():
     income = np.ones(2, dtype=np.float32)
     st = AgentState.initial(2, income, income, risk_perc_min=0.0, initial_flood_timer=0)
     assert np.all(st.flood_timer == 0)
+
+
+def test_new_fields_shapes_dtypes_and_defaults():
+    """last_flood_severity / is_insured: correct dtype, zero-initialised."""
+    st = _make(6)
+    assert st.last_flood_severity.shape == (6,)
+    assert st.last_flood_severity.dtype == np.float32
+    assert np.all(st.last_flood_severity == 0.0)
+    assert st.is_insured.shape == (6,)
+    assert st.is_insured.dtype == bool
+    assert not st.is_insured.any()
+
+
+def test_new_fields_copied_deeply():
+    st = _make(4)
+    clone = st.copy()
+    clone.last_flood_severity[0] = 0.7
+    clone.is_insured[1] = True
+    assert st.last_flood_severity[0] == 0.0
+    assert st.is_insured[1] == False  # noqa: E712
+
+
+def test_positional_construction_backfills_new_fields():
+    """Legacy positional construction (pre-severity API) still works."""
+    n = 3
+    ones = np.ones(n, dtype=np.float32)
+    st = AgentState(
+        ones, ones, ones.copy(),
+        np.zeros(n, dtype=np.int32),
+        np.zeros(n, dtype=bool),
+        np.zeros(n, dtype=np.int32),
+    )
+    assert st.last_flood_severity.shape == (n,)
+    assert st.is_insured.shape == (n,)

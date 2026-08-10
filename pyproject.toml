@@ -7,7 +7,9 @@ name = "floodadapt-abm"
 version = "0.1.0"
 description = "Agent-based flood adaptation simulation coupled with DYNAMO-M SEU decision framework."
 readme = "README.md"
-requires-python = ">=3.10"
+# py3.11 floor is forced by the main-engine dependency chain:
+# honeybees 1.2.0 -> zarr>=3.0.5 (py>=3.11); mesa 3.3.1 is also py>=3.11.
+requires-python = ">=3.11"
 dependencies = [
     "numpy<2.5",
     "xarray",
@@ -15,15 +17,18 @@ dependencies = [
     "pandas",
     "netcdf4",
     "matplotlib",
+    # Main engine: run_mesa_native_full drives the simulation with the real
+    # honeybees Model clock (the native DYNAMO-M framework base class).
+    "honeybees==1.2.0",
 ]
 
 [project.optional-dependencies]
 # Full lookup-table generation pipeline (stage 1) requires flood-adapt
 pipeline = ["flood-adapt==1.1.3"]
-# DYNAMO-M native ABM framework (Phase 4b-full + PRE.1). Not needed by the MVP,
-# which runs via the dependency-free mesa_native mirror. Pin exact versions once
-# PRE.1 (verification/preflight_4b_full/step1_import_test.py) records them.
-dynamo = ["mesa==3.3.1", "honeybees==1.2.0"]
+# mesa is NOT imported anywhere in FloodAdapt-ABM or native DYNAMO-M; the pin
+# is retained here only to mirror the verified Phase-4b-full conda environment
+# (verification/preflight_4b_full/step1_versions.json).
+dynamo = ["mesa==3.3.1"]
 dev = ["pytest>=7", "pytest-cov", "ipykernel", "jupyterlab"]
 
 [tool.setuptools]

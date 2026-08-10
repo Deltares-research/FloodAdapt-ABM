@@ -68,8 +68,8 @@ class DynamoDecisionBridge:
     income_per_agent : np.ndarray or None
         Annual income for each *residential* agent in the same unit as
         damages (USD by default).  Shape ``(n_res_agents,)``.
-        When ``None`` the bridge synthesises income from
-        ``max_pot_dmg / income_to_wealth_ratio`` (fallback for demos).
+        When ``None`` the bridge synthesises income from the regional
+        lognormal distribution (``income_mode="synthetic_lognormal"``).
     amenity_value_per_agent : np.ndarray or None
         Amenity value per agent.  When ``None`` defaults to zero.
 
@@ -105,6 +105,8 @@ class DynamoDecisionBridge:
         config: CouplingConfig | None = None,
         income_per_agent: np.ndarray | None = None,
         amenity_value_per_agent: np.ndarray | None = None,
+        wealth_per_agent: np.ndarray | None = None,
+        income_percentile_per_agent: np.ndarray | None = None,
     ) -> None:
         self._ds = ds
         self.config: CouplingConfig = config if config is not None else CouplingConfig()
@@ -125,7 +127,12 @@ class DynamoDecisionBridge:
         self.n_agents: int = int(self._res_mask.sum())
 
         # -- Initialize economic and state variables ---------------------------
-        self._init_economic_variables(income_per_agent, amenity_value_per_agent)
+        self._init_economic_variables(
+            income_per_agent,
+            amenity_value_per_agent,
+            wealth_per_agent=wealth_per_agent,
+            income_percentile_per_agent=income_percentile_per_agent,
+        )
         self._init_state_variables()
 
         # -- Annualised adaptation cost (amortised loan) ---------------------
@@ -139,6 +146,20 @@ class DynamoDecisionBridge:
             ds[self._nc.dimension_event].attrs[self._nc.attr_event_freq],
             dtype=np.float64,
         )
+
+        # -- Nuisance-event filter (single source of truth) -------------------
+        # When ``nuisance_freq_threshold`` is set, events with a higher annual
+        # frequency are dropped from the catalogue ONCE here, so the hazard
+        # draw and the SEU decision integral always see the same event set.
+        # ``self._event_keep`` also slices the event axis of the materialised
+        # damage cubes in ``_interpolate_strategy``.
+        self._event_keep: np.ndarray | None = None
+        threshold = self._dec.nuisance_freq_threshold
+        if threshold is not None:
+            keep = self._event_freqs <= float(threshold)
+            self._event_keep = keep
+            self._event_names = self._event_names[keep]
+            self._event_freqs = self._event_freqs[keep]
 
         # -- Pre-build damage arrays (one per strategy, shape n_agents x n_events) --
         self._damage_no_measures: np.ndarray | None = None
@@ -162,6 +183,35 @@ class DynamoDecisionBridge:
     # -----------------------------------------------------------------------
     # Public entry points
     # -----------------------------------------------------------------------
+
+    @property
+    def p_floods_seu(self) -> np.ndarray:
+        """
+        Annual exceedance probabilities fed to the SEU decision kernels.
+
+        Controlled by ``DecisionConfig.seu_prob_mode``:
+
+        * ``"exceedance"`` — ``p_i = 1 - exp(-freq_i)``, the exact
+          probability of at least one occurrence of a Poisson arrival with
+          annual rate ``freq_i``.  Always < 1, consistent with the
+          exceedance-curve semantics of the trapezoidal EU integral (and
+          with the yearly ``dt = 1`` step of the engine).
+        * ``"raw_freq"`` — legacy: the raw frequencies are used directly
+          (valid only while every frequency is well below 1).
+
+        Returns
+        -------
+        p_floods : np.ndarray[float64], shape (n_events,)
+            Aligned with the (possibly nuisance-filtered) event catalogue.
+        """
+        if self._dec.seu_prob_mode == "exceedance":
+            return -np.expm1(-self._event_freqs)
+        if self._dec.seu_prob_mode == "raw_freq":
+            return self._event_freqs
+        raise ValueError(
+            f"Unknown seu_prob_mode {self._dec.seu_prob_mode!r}; "
+            "expected 'exceedance' or 'raw_freq'."
+        )
 
     def prepare_damage_arrays(
         self,
@@ -276,8 +326,14 @@ class DynamoDecisionBridge:
         parameters from ``settings.yml`` lines 26-30):
 
             ``risk_perc = rp_max * 1.6^(coef * flood_timer) + rp_min``
-            
+
         See Tierolf et al. (2023) Section 2.2 for the scientific basis.
+
+        .. note::
+           Legacy binary-only duplicate kept for the deprecated
+           ``evaluate_decisions`` path.  The maintained implementation —
+           including the severity-aware ``perception_mode`` — lives in
+           :meth:`floodadapt_abm.simulation_engine.SimulationEngine.update_flood_experience`.
 
         Parameters
         ----------
@@ -335,8 +391,10 @@ class DynamoDecisionBridge:
             np.float32
         )
 
-        # Exceedance probabilities of each event (sorted ascending for trapz)
-        p_floods: np.ndarray = self._event_freqs.astype(np.float32)
+        # Exceedance probabilities of each event (sorted ascending for trapz).
+        # Honours seu_prob_mode; identical to the raw frequencies under the
+        # legacy "raw_freq" mode.
+        p_floods: np.ndarray = self.p_floods_seu.astype(np.float32)
 
         # Time horizon array (same for all agents here; extend later if needed)
         T: np.ndarray = np.full(
@@ -452,12 +510,110 @@ class DynamoDecisionBridge:
     # Private helpers
     # -----------------------------------------------------------------------
 
+    #: Native DYNAMO-M wealth-to-income ratio by income percentile
+    #: (``coastal_nodes.py:626-632`` / ``decision_module.py:27-30``): richer
+    #: households hold proportionally more wealth relative to income.
+    _WEALTH_RATIO_PERCENTILES: tuple[float, ...] = (0, 20, 40, 60, 80, 100)
+    _WEALTH_RATIO_VALUES: tuple[float, ...] = (0.0, 1.06, 4.14, 4.19, 5.24, 6.0)
+
+    def _synthesize_income_wealth(
+        self,
+        income_percentile: np.ndarray | None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Port of the native DYNAMO-M income/wealth sampling pipeline.
+
+        Mirrors ``base_nodes.py:59-76`` and ``coastal_nodes.py:597-632``:
+
+        1. a regional **lognormal income distribution** is fitted from the
+           configured ``median_income`` and ``mean_median_inc_ratio``
+           (``mu = ln(median)``, ``sd = sqrt(2 ln(mean/median))``,
+           5,000 samples, ``int32`` cast, sorted) — natively the mean comes
+           from the GDL sub-national income raster / World-Bank table and
+           the ratio from the UN WIID;
+        2. each household reads its income off that distribution at its
+           **income percentile** (supplied per agent, or drawn uniformly in
+           ``[1, 99]`` — the native fallback);
+        3. ``wealth = ratio(percentile) * income`` with the interpolated
+           native wealth-to-income table (see ``_WEALTH_RATIO_*``).
+
+        Randomness uses a **dedicated generator** derived from the config
+        seed so the one-off income synthesis never perturbs the event-draw
+        or decision-rule RNG streams (bit-parity discipline).
+
+        Parameters
+        ----------
+        income_percentile : np.ndarray or None
+            Per-agent income percentiles in ``[1, 99]`` (e.g. derived from
+            census data for the case study); ``None`` draws the uniform
+            native fallback.
+
+        Returns
+        -------
+        income, wealth : np.ndarray[float32]
+            Per-agent income and wealth, shape ``(n_agents,)``.
+        percentile : np.ndarray[int64]
+            The percentile actually used per agent (stored for diagnostics
+            and reused for the wealth ratio, keeping the two consistent).
+        """
+        # Dedicated, seed-derived stream (never shared with self._rng).
+        rng = np.random.default_rng([self.config.random_seed, 0x1C0])
+
+        median = float(self._dec.median_income)
+        mean = median * float(self._dec.mean_median_inc_ratio)
+        mu = np.log(median)
+        sd = np.sqrt(2.0 * np.log(mean / median))
+        # Native: 5,000 samples, int32 cast, sorted ascending.
+        distribution = np.sort(rng.lognormal(mu, sd, 5_000).astype(np.int32))
+
+        if income_percentile is not None:
+            percentile = np.asarray(income_percentile)
+            if percentile.shape != (self.n_agents,):
+                raise ValueError(
+                    f"income_percentile_per_agent must have shape "
+                    f"({self.n_agents},), got {percentile.shape}."
+                )
+            percentile = np.clip(percentile.astype(np.int64), 1, 99)
+        else:
+            # Native fallback: uniform percentile per household
+            # (coastal_nodes.py:603).
+            percentile = rng.integers(1, 100, self.n_agents)
+
+        income = (
+            np.percentile(distribution, percentile)
+            .astype(np.int32)
+            .astype(np.float32)
+        )
+        ratio = np.interp(
+            percentile,
+            self._WEALTH_RATIO_PERCENTILES,
+            self._WEALTH_RATIO_VALUES,
+        )
+        wealth = (ratio * income).astype(np.float32)
+        return income, wealth, percentile
+
     def _init_economic_variables(
         self,
         income_per_agent: np.ndarray | None,
         amenity_value_per_agent: np.ndarray | None,
+        wealth_per_agent: np.ndarray | None = None,
+        income_percentile_per_agent: np.ndarray | None = None,
     ) -> None:
-        """Initialize income, wealth, and amenity arrays for all agents."""
+        """
+        Initialize income, wealth, and amenity arrays for all agents.
+
+        Resolution order for income/wealth:
+
+        1. explicit ``income_per_agent`` / ``wealth_per_agent`` arrays
+           (e.g. census/ACS data joined on ``object_id``),
+        2. otherwise the ``income_mode`` fallback, which is always
+           ``"synthetic_lognormal"`` (native DYNAMO-M port, income
+           independent of building value).  The former ``"mpd_ratio"``
+           fallback was removed in 2026-08 because its affordability gate
+           never bound for any household; it now raises.
+        """
+        self.income_percentile: np.ndarray | None = None
+
         # -- Income & wealth --------------------------------------------------
         if income_per_agent is not None:
             self.income = np.asarray(income_per_agent, dtype=np.float32)
@@ -466,17 +622,38 @@ class DynamoDecisionBridge:
                     f"income_per_agent must have shape ({self.n_agents},), "
                     f"got {self.income.shape}."
                 )
+            if wealth_per_agent is not None:
+                self.wealth = np.asarray(wealth_per_agent, dtype=np.float32)
+                if self.wealth.shape != (self.n_agents,):
+                    raise ValueError(
+                        f"wealth_per_agent must have shape ({self.n_agents},), "
+                        f"got {self.wealth.shape}."
+                    )
+            else:
+                self.wealth = (
+                    self.income * self._dec.income_to_wealth_ratio
+                ).astype(np.float32)
+        elif self._dec.income_mode == "synthetic_lognormal":
+            self.income, self.wealth, self.income_percentile = (
+                self._synthesize_income_wealth(income_percentile_per_agent)
+            )
+        elif self._dec.income_mode == "mpd_ratio":
+            raise ValueError(
+                "income_mode='mpd_ratio' was removed in 2026-08. It set "
+                "income = max_pot_dmg / income_to_wealth_ratio, so wealth "
+                "cancelled back to exactly the building value and both sides "
+                "of the affordability test became proportional to "
+                "max_pot_dmg. The gate collapsed to one global constant and "
+                "never bound for any household. Use the default "
+                "income_mode='synthetic_lognormal', and set median_income / "
+                "mean_median_inc_ratio for your study area (see "
+                "floodadapt_abm.income_utils.fetch_acs_county_income)."
+            )
         else:
-            # Fallback: derive income from max_pot_dmg / income_to_wealth_ratio
-            self.income = np.where(
-                self._dec.income_to_wealth_ratio > 0,
-                self.max_pot_dmg / self._dec.income_to_wealth_ratio,
-                0.0,
-            ).astype(np.float32)
-
-        self.wealth: np.ndarray = (
-            self.income * self._dec.income_to_wealth_ratio
-        ).astype(np.float32)
+            raise ValueError(
+                f"Unknown income_mode {self._dec.income_mode!r}; expected "
+                "'synthetic_lognormal'."
+            )
 
         # -- Amenity value ---------------------------------------------------
         if amenity_value_per_agent is not None:
@@ -533,16 +710,34 @@ class DynamoDecisionBridge:
 
             ``annual_cost = total_cost * [r*(1+r)^L / ((1+r)^L - 1)]``
 
-        where ``total_cost = adaptation_cost_fraction * max_pot_dmg``,
-        ``r`` is the interest rate, and ``L`` is the loan duration.
+        where ``r`` is the interest rate and ``L`` is the loan duration
+        (identical annuity to native ``coastal_nodes.py:666-672``).
+
+        ``total_cost`` follows ``DecisionConfig.adaptation_total_cost``:
+
+        * a **fixed per-household amount** when set — the native DYNAMO-M
+          model (country-scaled constant, ``prepare_scale_to_GDP.py``);
+          cost independent of property value lets the affordability
+          constraint discriminate between households;
+        * fractional fallback (``None``):
+          ``adaptation_cost_fraction * max_pot_dmg`` — proportional to
+          building value.  Prefer the fixed amount for a real study: a cost
+          proportional to building value weakens the affordability signal,
+          and paired with the removed ``income_mode="mpd_ratio"`` it used to
+          cancel out of the gate entirely.
 
         Returns
         -------
         annual_cost : np.ndarray[float32], shape (n_agents,)
         """
-        total_cost: np.ndarray = (
-            self._dec.adaptation_cost_fraction * self.max_pot_dmg
-        )
+        if self._dec.adaptation_total_cost is not None:
+            total_cost: np.ndarray = np.full(
+                self.n_agents,
+                float(self._dec.adaptation_total_cost),
+                dtype=np.float64,
+            )
+        else:
+            total_cost = self._dec.adaptation_cost_fraction * self.max_pot_dmg
         r: float = self._dec.interest_rate
         lp: int = self._dec.loan_duration
         if r == 0.0:
@@ -599,6 +794,14 @@ class DynamoDecisionBridge:
                 dim_strategy=self._nc.dimension_strategy,
                 var_total_damage=self._nc.var_total_damage,
             )
+            if self._event_keep is not None:
+                # Apply the nuisance-event filter to the cube's event axis so
+                # the damage matrices stay aligned with the filtered catalogue.
+                values, slr_arr_cube = cube
+                cube = (
+                    np.ascontiguousarray(values[:, :, self._event_keep]),
+                    slr_arr_cube,
+                )
             self._strategy_cubes[strategy] = cube
         values, slr_arr_cube = cube
         return interpolate_cube_at_slr(
@@ -967,6 +1170,154 @@ def _calc_eu_adapt(
 
     # Expenditure cap: agents who cannot afford adaptation → EU = -inf
     constrained = income * expenditure_cap <= adaptation_costs
+    eu_array[constrained] = -np.inf
+
+    return eu_array
+
+
+def _calc_eu_insure(
+    n_agents: int,
+    wealth: np.ndarray,
+    income: np.ndarray,
+    expenditure_cap: float,
+    amenity_value: np.ndarray,
+    amenity_weight: float,
+    risk_perception: np.ndarray,
+    expected_damages: np.ndarray,
+    premium: np.ndarray,
+    p_floods: np.ndarray,
+    T: np.ndarray,
+    r: float,
+    sigma: float,
+    error_terms: np.ndarray,
+    deductible: float = 0.1,
+) -> np.ndarray:
+    """
+    Calculate the Subjective Expected Utility of taking flood insurance.
+
+    Ported from ``DecisionModule.calcEU_insure`` in DYNAMO-M
+    (``decision_module.py`` lines 243-367; Tierolf et al., 2023):
+
+    * insured households still face ``deductible * expected_damages``
+      (native hard-codes ``deductable = 0.1``),
+    * the (flat, community-rated) premium is paid every year of the
+      decision horizon: the time-discounted premium stream
+      ``sum_{t<T} premium.mean() / (1+r)^t`` is subtracted from the NPVs,
+    * the same 0.998 perceived-probability cap, ``max(1, NPV)`` floor,
+      CRRA utility, and trapezoidal integration as the other two options,
+    * households whose annual premium exceeds ``expenditure_cap * income``
+      cannot afford insurance (``EU = -inf``).
+
+    Parameters
+    ----------
+    n_agents : int
+        Number of agents.
+    wealth, income : np.ndarray, shape (n_agents,)
+        Household wealth and annual income.
+    expenditure_cap : float
+        Maximum fraction of income spendable on the premium per year.
+    amenity_value : np.ndarray, shape (n_agents,)
+        Location amenity value (weighted by ``amenity_weight``).
+    amenity_weight : float
+        Scalar multiplier for amenity.
+    risk_perception : np.ndarray, shape (n_agents,)
+        Perceived-risk multiplier per agent.
+    expected_damages : np.ndarray, shape (n_floods, n_agents)
+        Expected damages per flood event per agent under the NO-MEASURES
+        strategy (insurance does not change the hazard, only who pays).
+    premium : np.ndarray, shape (n_agents,)
+        Annual insurance premium per agent.  Flat under the ported
+        community-rated insurer (``mean EAD``, ``insurer_agent.py:20-26``);
+        heterogeneous under risk-based pricing (each agent's own EAD).
+    p_floods : np.ndarray, shape (n_floods,)
+        Exceedance probabilities of each event.
+    T : np.ndarray[int32], shape (n_agents,)
+        Decision horizon per agent.
+    r : float
+        Time-discounting rate.
+    sigma : float
+        CRRA risk-aversion coefficient.
+    error_terms : np.ndarray, shape (n_agents,)
+        Multiplicative stochastic error term (all-ones when
+        ``error_interval == 0``; must always be supplied).
+    deductible : float
+        Fraction of damage still borne by the insured household.
+        Default ``0.1`` (native hard-coded value).
+
+    Returns
+    -------
+    eu_array : np.ndarray, shape (n_agents,), dtype float32
+        Subjective expected utility of insuring per agent
+        (``-inf`` where unaffordable).
+    """
+    # Insured households still bear the deductible share of every damage.
+    expected_damages_insured = (expected_damages * deductible).astype(np.float32)
+
+    amenity_value = (amenity_value * amenity_weight).astype(np.float32)
+
+    sort_idx = np.argsort(p_floods)
+    expected_damages_insured = expected_damages_insured[sort_idx, :]
+    p_floods = p_floods[sort_idx]
+
+    n_floods = len(p_floods)
+    max_T = int(np.max(T))
+
+    # --- Perceived risk probabilities (identical construction) ------------
+    p_all = np.full((n_floods + 3, n_agents), -1.0, dtype=np.float32)
+    perc_risk = (
+        p_floods[:, np.newaxis]
+        * risk_perception[np.newaxis, :]
+    ).astype(np.float32)
+    p_all[1:-2, :] = perc_risk
+    p_all = np.minimum(p_all, 0.998)
+    p_all[-2, :] = p_all[-3, :] + 0.001
+    p_all[-1, :] = 1.0
+    p_all[0, :] = 0.0
+
+    # --- NPV under the insured damage profile -----------------------------
+    NPV_summed = _iterate_through_flood(
+        n_floods=n_floods,
+        wealth=wealth,
+        income=income,
+        amenity_value=amenity_value,
+        max_T=max_T,
+        expected_damages=expected_damages_insured,
+        n_agents=n_agents,
+        r=r,
+    )
+
+    # --- Subtract the time-discounted premium stream ----------------------
+    # Native (decision_module.py:331-343): discounts over the decision
+    # horizon (NOT the loan duration), a scalar cost per horizon length
+    # using premium.mean(), gathered per agent via np.take(cost_array, T).
+    if r == 0.0:
+        discounts = np.ones(max_T, dtype=np.float32)
+    else:
+        discounts = (1.0 / (1.0 + r) ** np.arange(max_T)).astype(np.float32)
+
+    # Native (``decision_module.py:331-343``) discounts the single scalar
+    # ``premium.mean()`` — exact for its flat community-rated premium, but
+    # wrong under risk-based pricing.  We discount each agent's OWN premium,
+    # which is identical whenever the premium array is flat (native's only
+    # case) and coherent when it is not.
+    years = np.arange(max_T + 1, dtype=np.int32)
+    cost_array = np.zeros((n_agents, len(years)), dtype=np.float32)
+    for i, yr in enumerate(years):
+        cost_array[:, i] = np.sum(discounts[:yr]) * premium
+
+    time_discounted_premium = cost_array[np.arange(n_agents), T]
+    NPV_summed -= time_discounted_premium  # broadcast over flood dimension
+
+    # --- Integrate Expected Utility ---------------------------------------
+    eu_array = _integrate_expected_utility(
+        NPV_summed=NPV_summed,
+        p_all=p_all,
+        sigma=sigma,
+        error_terms=error_terms,
+    )
+
+    # Affordability: premium above the expenditure cap → EU = -inf
+    constrained = income * expenditure_cap <= premium
     eu_array[constrained] = -np.inf
 
     return eu_array

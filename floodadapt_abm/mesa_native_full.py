@@ -4,6 +4,13 @@ mesa_native_full.py
 Phase **4b-full** of the FloodAdapt-ABM x DYNAMO-M coupling: **native-class
 integration**.
 
+.. note:: **Role: MAIN engine.**  :func:`run_mesa_native_full` is the
+   recommended entry point for running coupled simulations; ``honeybees``
+   is a core dependency of the package.  ``SimulationEngine`` (the shared
+   compute kernel) and :func:`~floodadapt_abm.mesa_native.run_mesa_native`
+   (the framework-free mirror) are experiment/verification paths kept for
+   the bit-parity gates.
+
 Where Phase 4b (``mesa_native.py``) mirrors the DYNAMO-M ``SLRModel`` tick loop
 with a *framework-free* Python object, Phase 4b-full binds the **real honeybees
 ``Model``** as the time-owning base class and routes the per-year decision
@@ -49,15 +56,16 @@ perturbing the kernel, so ``run_mesa_native_full`` reproduces both
 ``run_mesa_native`` and ``engine.run`` **bit-for-bit** — that triple equivalence
 is the 4b-full gate.
 
-Guarded / optional dependency
------------------------------
-``honeybees`` is imported lazily and defensively: if it cannot be imported,
-:data:`HONEYBEES_AVAILABLE` is ``False`` and constructing a
-:class:`FloodAdaptSLRModelFull` raises :class:`HoneybeesNotAvailable` — but
-importing FloodAdapt-ABM and using the framework-free
-:class:`~floodadapt_abm.mesa_native.FloodAdaptSLRModel` (Phase 4b) keeps working.
-The native ``DecisionModule`` is optional in the same way: the full driver runs
-with *any* :class:`~floodadapt_abm.decision_rule.DecisionRule`; it becomes a true
+Dependency handling
+-------------------
+``honeybees`` is a **core dependency** of FloodAdapt-ABM (it powers this main
+engine).  The import guard is retained defensively: if ``honeybees`` cannot be
+imported (broken environment), :data:`HONEYBEES_AVAILABLE` is ``False`` and
+constructing a :class:`FloodAdaptSLRModelFull` raises
+:class:`HoneybeesNotAvailable` with an actionable message — there is **no
+silent fallback**.  The native ``DecisionModule`` remains genuinely optional:
+the driver runs with *any*
+:class:`~floodadapt_abm.decision_rule.DecisionRule`; it becomes a true
 *native-class* integration when driven with a :class:`DynamoLiveRule`.
 """
 from __future__ import annotations
@@ -71,7 +79,13 @@ from types import SimpleNamespace
 import numpy as np
 
 from floodadapt_abm.coastal_node_adapter import LookupTableAdapter
+from floodadapt_abm.decision_rule import STATUS_PREFERRED
 from floodadapt_abm.simulation_engine import SimulationEngine
+
+#: Role of this driver: the preferred entry point for application runs
+#: (a real honeybees ``Model`` owns the clock).  See ``floodadapt_abm``
+#: package docstring for the full role table.
+STATUS: str = STATUS_PREFERRED
 
 __all__ = [
     "FloodAdaptSLRModelFull",
@@ -173,7 +187,12 @@ class CoastalNodePopulationFull:
         # (3) reverse: route the (already-updated) decision state back through
         #     the node seam.  Idempotent — the kernel is the single source of
         #     truth — but it exercises the full write-back contract each tick.
-        node.adapt = m.engine.state.is_adapted.astype(np.int8)
+        #     Native encoding: 0 = nothing, 1 = floodproofed, 2 = insured.
+        node.adapt = np.where(
+            m.engine.state.is_insured,
+            np.int8(2),
+            m.engine.state.is_adapted.astype(np.int8),
+        )
         node.time_adapt = m.engine.state.time_adapted.copy()
         self.adapter.write_back(node)
 
@@ -310,6 +329,24 @@ class FloodAdaptSLRModelFull(_ModelBase):
         self.eu_do_nothing_history = (
             np.full((n, n_timesteps), np.nan, dtype=np.float32) if track_eu else None
         )
+        # Insurance buffers (allocated only when the option is enabled).
+        include_insurance = engine.config.decision.include_insurance
+        self.insured_history = (
+            np.zeros((n, n_timesteps), dtype=bool)
+            if include_insurance else None
+        )
+        self.out_of_pocket_history = (
+            np.zeros((n, n_timesteps), dtype=engine.damage_dtype)
+            if include_insurance else None
+        )
+        self.premium_history = (
+            np.zeros(n_timesteps, dtype=np.float32)
+            if include_insurance else None
+        )
+        self.premium_paid_history = (
+            np.zeros((n, n_timesteps), dtype=np.float32)
+            if include_insurance else None
+        )
 
     # -- clock alias --------------------------------------------------------
     @property
@@ -320,7 +357,6 @@ class FloodAdaptSLRModelFull(_ModelBase):
     @timestep.setter
     def timestep(self, value: int) -> None:
         self.current_timestep = value
-
     # -- staleness guard (PRE.3) -------------------------------------------
     def _check_not_stale(self) -> None:
         """Raise if the engine's shared state was reset since construction."""
@@ -339,6 +375,11 @@ class FloodAdaptSLRModelFull(_ModelBase):
         if self.track_eu and res["eu_adapt"] is not None:
             self.eu_adapt_history[:, t] = res["eu_adapt"]
             self.eu_do_nothing_history[:, t] = res["eu_do_nothing"]
+        if self.insured_history is not None:
+            self.insured_history[:, t] = res["is_insured"]
+            self.out_of_pocket_history[:, t] = res["out_of_pocket"]
+            self.premium_history[t] = res["premium"]
+            self.premium_paid_history[:, t] = res["premium_paid"]
 
     # -- ticking ------------------------------------------------------------
     def step(self) -> None:  # noqa: D401 - overrides honeybees Model.step
@@ -424,6 +465,7 @@ def run_mesa_native_full(
     n_years = int(slr_values.shape[0])
     base_seed = seed if seed is not None else engine.config.random_seed
     n = engine.n_agents
+    include_insurance = engine.config.decision.include_insurance
 
     damage_history = np.zeros((no_seq, n, n_years), dtype=engine.damage_dtype)
     adapted_history = np.zeros((no_seq, n, n_years), dtype=bool)
@@ -432,6 +474,21 @@ def run_mesa_native_full(
     )
     eu_do_nothing_history = (
         np.full((no_seq, n, n_years), np.nan, dtype=np.float32) if track_eu else None
+    )
+    insured_history = (
+        np.zeros((no_seq, n, n_years), dtype=bool) if include_insurance else None
+    )
+    out_of_pocket_history = (
+        np.zeros((no_seq, n, n_years), dtype=engine.damage_dtype)
+        if include_insurance else None
+    )
+    premium_history = (
+        np.zeros((no_seq, n_years), dtype=np.float32)
+        if include_insurance else None
+    )
+    premium_paid_history = (
+        np.zeros((no_seq, n, n_years), dtype=np.float32)
+        if include_insurance else None
     )
 
     for s in range(no_seq):
@@ -450,6 +507,11 @@ def run_mesa_native_full(
         if track_eu:
             eu_adapt_history[s] = model.eu_adapt_history
             eu_do_nothing_history[s] = model.eu_do_nothing_history
+        if include_insurance:
+            insured_history[s] = model.insured_history
+            out_of_pocket_history[s] = model.out_of_pocket_history
+            premium_history[s] = model.premium_history
+            premium_paid_history[s] = model.premium_paid_history
 
     results = {
         "damage_history": damage_history,
@@ -459,4 +521,10 @@ def run_mesa_native_full(
     if track_eu:
         results["eu_adapt_history"] = eu_adapt_history
         results["eu_do_nothing_history"] = eu_do_nothing_history
+    if include_insurance:
+        results["insured_history"] = insured_history
+        results["out_of_pocket_history"] = out_of_pocket_history
+        results["premium_history"] = premium_history
+        results["premium_paid_history"] = premium_paid_history
+        results["insured_fraction"] = insured_history.mean(axis=1)
     return results

@@ -3,6 +3,12 @@ mesa_native.py
 ==============
 Phase 4b of the FloodAdapt-ABM x DYNAMO-M coupling: **Mesa-native driving**.
 
+.. note:: **Role: verification mirror (experiment/verification path).**
+   This framework-free driver is retained as the Phase-4b bit-parity gate
+   for the main engine.  Applications should use
+   :func:`~floodadapt_abm.mesa_native_full.run_mesa_native_full` (the real
+   honeybees ``Model`` clock) instead.
+
 Where Phase 3 / 4a let :class:`~floodadapt_abm.simulation_engine.SimulationEngine`
 own the year loop (``engine.run()`` iterates the sequences and the years), Phase
 4b **inverts time ownership**: a small model object advances one tick at a time
@@ -19,8 +25,7 @@ Instantiating it requires the entire DYNAMO-M **data + geodata ecosystem** plus
 ``honeybees`` / ``mesa`` — none of which need be present to *use* FloodAdapt-ABM.
 That full binding ("4b-full") is a documented follow-up: see the Phase-4b model
 documentation ``20260708_phase_4b_model_documentaiton_phase.docx`` (Sections 2 and
-8, incl. the effort/risk assessment for 4b-full) and the "Phase 4b" section of
-``AGENTS.md``.
+8, incl. the effort/risk assessment for 4b-full) and ``docs/architecture.md``.
 
 What this module provides instead is a faithful, dependency-free **mirror of the
 native control flow** that reuses the already-validated FloodAdapt-ABM kernels:
@@ -52,7 +57,12 @@ from __future__ import annotations
 
 import numpy as np
 
+from floodadapt_abm.decision_rule import STATUS_VERIFICATION
 from floodadapt_abm.simulation_engine import SimulationEngine
+
+#: Role of this driver: retained only to prove the bit-parity contract.
+#: Applications should use ``run_mesa_native_full`` instead.
+STATUS: str = STATUS_VERIFICATION
 
 
 class CoastalNodePopulation:
@@ -193,6 +203,24 @@ class FloodAdaptSLRModel:
             np.full((n, self.n_timesteps), np.nan, dtype=np.float32)
             if track_eu else None
         )
+        # Insurance buffers (allocated only when the option is enabled).
+        include_insurance = engine.config.decision.include_insurance
+        self.insured_history = (
+            np.zeros((n, self.n_timesteps), dtype=bool)
+            if include_insurance else None
+        )
+        self.out_of_pocket_history = (
+            np.zeros((n, self.n_timesteps), dtype=engine.damage_dtype)
+            if include_insurance else None
+        )
+        self.premium_history = (
+            np.zeros(self.n_timesteps, dtype=np.float32)
+            if include_insurance else None
+        )
+        self.premium_paid_history = (
+            np.zeros((n, self.n_timesteps), dtype=np.float32)
+            if include_insurance else None
+        )
 
     # -- staleness guard ----------------------------------------------------
     def _check_not_stale(self) -> None:
@@ -219,6 +247,11 @@ class FloodAdaptSLRModel:
         if self.track_eu and res["eu_adapt"] is not None:
             self.eu_adapt_history[:, t] = res["eu_adapt"]
             self.eu_do_nothing_history[:, t] = res["eu_do_nothing"]
+        if self.insured_history is not None:
+            self.insured_history[:, t] = res["is_insured"]
+            self.out_of_pocket_history[:, t] = res["out_of_pocket"]
+            self.premium_history[t] = res["premium"]
+            self.premium_paid_history[:, t] = res["premium_paid"]
 
     # -- ticking ------------------------------------------------------------
     def step(self) -> None:
@@ -283,6 +316,7 @@ def run_mesa_native(
     n_years = int(slr_values.shape[0])
     base_seed = seed if seed is not None else engine.config.random_seed
     n = engine.n_agents
+    include_insurance = engine.config.decision.include_insurance
 
     damage_history = np.zeros((no_seq, n, n_years), dtype=engine.damage_dtype)
     adapted_history = np.zeros((no_seq, n, n_years), dtype=bool)
@@ -291,6 +325,21 @@ def run_mesa_native(
     )
     eu_do_nothing_history = (
         np.full((no_seq, n, n_years), np.nan, dtype=np.float32) if track_eu else None
+    )
+    insured_history = (
+        np.zeros((no_seq, n, n_years), dtype=bool) if include_insurance else None
+    )
+    out_of_pocket_history = (
+        np.zeros((no_seq, n, n_years), dtype=engine.damage_dtype)
+        if include_insurance else None
+    )
+    premium_history = (
+        np.zeros((no_seq, n_years), dtype=np.float32)
+        if include_insurance else None
+    )
+    premium_paid_history = (
+        np.zeros((no_seq, n, n_years), dtype=np.float32)
+        if include_insurance else None
     )
 
     for s in range(no_seq):
@@ -308,6 +357,11 @@ def run_mesa_native(
         if track_eu:
             eu_adapt_history[s] = model.eu_adapt_history
             eu_do_nothing_history[s] = model.eu_do_nothing_history
+        if include_insurance:
+            insured_history[s] = model.insured_history
+            out_of_pocket_history[s] = model.out_of_pocket_history
+            premium_history[s] = model.premium_history
+            premium_paid_history[s] = model.premium_paid_history
 
     results = {
         "damage_history": damage_history,
@@ -317,4 +371,10 @@ def run_mesa_native(
     if track_eu:
         results["eu_adapt_history"] = eu_adapt_history
         results["eu_do_nothing_history"] = eu_do_nothing_history
+    if include_insurance:
+        results["insured_history"] = insured_history
+        results["out_of_pocket_history"] = out_of_pocket_history
+        results["premium_history"] = premium_history
+        results["premium_paid_history"] = premium_paid_history
+        results["insured_fraction"] = insured_history.mean(axis=1)
     return results
