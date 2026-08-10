@@ -85,9 +85,9 @@ python 01_quickstart.py
 
 The `.nc` lookup table is the **only** interface between the stages — keep it stable.
 
-## Behaviour configuration (post-2026-07-review defaults)
+## Behaviour configuration
 
-The `DecisionConfig` defaults implement the fixes from the 2026-07 review (rationale: [docs/architecture.md](docs/architecture.md), Appendix B):
+The `DecisionConfig` defaults (rationale: [docs/architecture.md](docs/architecture.md), Appendix B):
 
 | Switch | Default | Meaning |
 |---|---|---|
@@ -99,8 +99,6 @@ The `DecisionConfig` defaults implement the fixes from the 2026-07 review (ratio
 | `income_mode` | `"synthetic_lognormal"` | Native DYNAMO-M income port — income independent of building value, so affordability genuinely binds |
 | `include_insurance` | `False` | Optional third decision option (ported native `calcEU_insure`, 10 % deductible) |
 | `insurance_pricing` | `"community"` | Premium rating: flat mean-EAD rate (native) or `"risk_based"` (each household's own expected payout). Levers: `insurance_loading`, `insurance_subsidy` |
-
-**Comparing against the pre-review behaviour:** every switch above also accepts its pre-review alternative (`"bernoulli_clip"`, `"raw_freq"`, `"binary"`, the cap policies), so you can isolate one change at a time. Notebook 2 uses them for its R2/R3 matched-hazard comparison. The `CouplingConfig.legacy()` preset that used to bundle them, and the golden regression that pinned it bit-exactly, were retired in 2026-08; name the switches you want explicitly instead. The `income_mode="mpd_ratio"` fallback was removed outright, because income and adaptation cost were both proportional to building value and the affordability gate never bound.
 
 Per-agent economic inputs can be supplied directly (`income_per_agent`, `wealth_per_agent`) or via **income percentiles** (`income_percentile_per_agent`; derive from ACS block-group data with `floodadapt_abm.income_utils.derive_income_percentiles`).
 
@@ -146,5 +144,3 @@ Reading order for newcomers:
 2. [notebooks/2_run_coupled_abm.ipynb](notebooks/2_run_coupled_abm.ipynb): the R1 DYNAMO ABM run walkthrough, including the household-income workflow and the insurance scenarios.
 3. [examples_engine/README.md](examples_engine/README.md): the numbered learning path (01 to 08; 08 tours the income, perception and insurance features).
 4. The three documents above, in the order of your question.
-
-(The 2026-07 review response and the government-extension feasibility assessment are project deliverables kept outside the repository.)
