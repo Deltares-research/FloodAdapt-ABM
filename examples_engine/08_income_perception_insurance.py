@@ -2,7 +2,7 @@
 08_income_perception_insurance.py
 =================================
 Tour of the post-review features: household **income percentiles**, the
-**severity-response forms** of flood risk perception, the **Poisson** event
+**severity exponent** of flood risk perception, the **Poisson** event
 draw, and **insurance pricing** modes.
 
 What you learn here
@@ -11,10 +11,10 @@ What you learn here
   from regional income data (``percentiles_from_income_values``) and from
   the building-value proxy when no locations are known
   (``percentiles_from_value_proxy``),
-* how the three ``perception_severity_form`` options shape the
+* how ``perception_severity_exponent`` (gamma) shapes the
   risk-perception spike after a flood,
 * why the Poisson draw recovers every event's nominal occurrence rate
-  (the legacy clip+cap draw does not),
+  (the pre-review clip+cap draw does not),
 * what ``insurance_pricing="community"`` vs ``"risk_based"`` means for
   premiums and uptake.
 
@@ -78,7 +78,7 @@ def _income_percentiles(ds) -> np.ndarray:
     print(f"  residential agents                 : {n}")
     print(f"  regional percentiles vs value rank : rho = {_spearman(pct_regional, mpd):+.2f}")
     print(f"  value-proxy percentiles vs value   : rho = {_spearman(pct_proxy, mpd):+.2f}  (target 0.50)")
-    print("  (uniform fallback would give rho ~= 0; legacy income mode gave rho = 1)")
+    print("  (uniform fallback gives rho ~= 0; the removed mpd_ratio mode gave rho = 1)")
     return pct_proxy
 
 
@@ -94,15 +94,22 @@ def _income_into_engine(ds, pct: np.ndarray) -> None:
     print(f"  affordability gate binds for       : {constrained.mean():.1%} of agents")
 
 
-def _severity_forms(ds) -> None:
-    """Perception spike right after a flood, per severity form."""
+def _severity_exponent(ds) -> None:
+    """Perception spike right after a flood, across the severity exponent.
+
+    ``perception_severity_exponent`` (gamma) is the single shape parameter
+    of the severity response, and it spans the whole hypothesis range.
+    """
     severities = np.array([0.05, 0.25, 0.50, 1.00])
-    forms = ["power", "saturating_exp", "threshold_linear"]
-    print(f"  {'damage severity':>16} | " + " | ".join(f"{f:>16}" for f in forms))
+    gammas = [0.2, 0.5, 1.0, 2.0]
+    labels = {0.2: "0.2 near-binary", 0.5: "0.5 default",
+              1.0: "1.0 linear", 2.0: "2.0 near-miss"}
+    print(f"  {'damage severity':>16} | "
+          + " | ".join(f"{labels[g]:>16}" for g in gammas))
     rows = {}
-    for form in forms:
+    for gamma in gammas:
         cfg = CouplingConfig(random_seed=SEED)
-        cfg.decision.perception_severity_form = form
+        cfg.decision.perception_severity_exponent = gamma
         engine = SimulationEngine(ds=ds, config=cfg)
         n = engine.n_agents
         flooded = np.zeros(n, dtype=bool)
@@ -110,12 +117,24 @@ def _severity_forms(ds) -> None:
         sev = np.zeros(n)
         sev[: severities.size] = severities
         engine.update_flood_experience(flooded, sev)
-        rows[form] = engine.state.risk_perception[: severities.size]
+        rows[gamma] = engine.state.risk_perception[: severities.size]
     for i, s in enumerate(severities):
-        cells = " | ".join(f"{rows[f][i]:16.3f}" for f in forms)
+        cells = " | ".join(f"{rows[g][i]:16.3f}" for g in gammas)
         print(f"  {s:16.0%} | {cells}")
-    print("  power: strong response even to small floods; saturating_exp: finite")
-    print("  slope at zero; threshold_linear: no response below 10 % damage.")
+    print("  Every gamma agrees at a total loss and differs on small floods:")
+    print("  gamma < 1 spikes strongly, gamma = 1 is proportional, gamma > 1")
+    print("  discounts small floods (the near-miss hypothesis).")
+
+    # The retired forms name their gamma equivalent rather than failing blind.
+    cfg = CouplingConfig(random_seed=SEED)
+    cfg.decision.perception_severity_form = "threshold_linear"
+    engine = SimulationEngine(ds=ds, config=cfg)
+    try:
+        engine.update_flood_experience(
+            np.zeros(engine.n_agents, dtype=bool), np.zeros(engine.n_agents)
+        )
+    except ValueError as exc:
+        print(f"  Migration path: {exc}")
 
 
 def _poisson_rate_recovery() -> None:
@@ -137,10 +156,10 @@ def _poisson_rate_recovery() -> None:
         return hits / n_years
 
     poisson = realised_rate("poisson", None)
-    legacy = realised_rate("bernoulli_clip", 4)
+    pre_review = realised_rate("bernoulli_clip", 4)
     print(f"  nominal rate of the extreme        : 0.0100 events/year")
     print(f"  realised, poisson (no cap)         : {poisson:.4f}  (matches)")
-    print(f"  realised, legacy clip + cap of 4   : {legacy:.4f}  (extreme mostly discarded)")
+    print(f"  realised, clip + cap of 4          : {pre_review:.4f}  (extreme mostly discarded)")
 
 
 def _insurance_pricing(ds) -> None:
@@ -177,8 +196,8 @@ def main() -> None:
     pct = _income_percentiles(ds)
     _income_into_engine(ds, pct)
 
-    _shared.banner("B) Severity-response forms of the risk-perception spike")
-    _severity_forms(ds)
+    _shared.banner("B) Severity exponent (gamma) of the risk-perception spike")
+    _severity_exponent(ds)
 
     _shared.banner("C) Poisson event draw: rate recovery for a rare extreme")
     _poisson_rate_recovery()

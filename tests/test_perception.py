@@ -2,8 +2,12 @@
 test_perception.py
 ==================
 Tests for the magnitude-aware flood-perception update: severity-scaled
-risk-perception peaks (all three severity forms), the flood-significance
-threshold, and exact legacy equivalence of the binary mode.
+risk-perception peaks, the flood-significance threshold, and exact legacy
+equivalence of the binary mode.
+
+The severity response is a **single** one-parameter form, the power law
+``peak = risk_perc_max * s ** gamma``.  The tests here pin what
+gamma covers rather than comparing forms.
 """
 from __future__ import annotations
 
@@ -129,7 +133,7 @@ def test_significance_threshold_creates_deadband():
 
 
 # ---------------------------------------------------------------------------
-# Severity-form family (perception_severity_form)
+# The severity exponent (perception_severity_exponent) and its guards
 # ---------------------------------------------------------------------------
 
 def _peak(engine: SimulationEngine, severities: np.ndarray) -> np.ndarray:
@@ -157,77 +161,96 @@ def test_default_form_is_power_and_unchanged():
     )
 
 
-def test_saturating_exp_form():
-    """(1 - e^(-k s)) / (1 - e^(-k)): monotone, bounded, exact endpoints."""
-    k = 3.0
-    engine = _engine(
-        "severity",
-        perception_severity_form="saturating_exp",
-        perception_severity_rate=k,
-    )
+@pytest.mark.parametrize("gamma", [0.2, 0.5, 1.0, 1.35, 2.0, 5.0])
+def test_gamma_spans_concave_linear_and_near_miss(gamma):
+    """One exponent covers the whole hypothesis range.
+
+    Whatever gamma is, the response stays monotone and pinned at both ends;
+    only the small-flood behaviour changes.  This is the property that made
+    the two extra forms redundant.
+    """
+    engine = _engine("severity", perception_severity_exponent=gamma)
     dec = engine.config.decision
-    sev = np.array([1.0, 0.5, 0.05])
+    sev = np.array([1.0, 0.5, 0.25, 0.05])
     rp = _peak(engine, sev)
-    expected = (
-        dec.risk_perc_max * (-np.expm1(-k * sev) / -np.expm1(-k))
-        + dec.risk_perc_min
-    )
-    assert np.allclose(rp[:3], expected, rtol=1e-5)
-    # Total loss reproduces the full legacy spike; monotone in severity.
+
+    # Pinned at s = 1 for every gamma: a total loss is the full spike.
     assert np.isclose(rp[0], dec.risk_perc_max + dec.risk_perc_min)
-    assert rp[0] > rp[1] > rp[2] > dec.risk_perc_min
-    # Finite slope at 0: a 5 % flood spikes far less than under power law.
-    power_5pct = dec.risk_perc_max * np.sqrt(0.05)
-    assert rp[2] - dec.risk_perc_min < power_5pct
-
-
-def test_threshold_linear_form():
-    """clip((s - s0)/(1 - s0), 0, 1): deadband below s0, then linear."""
-    s0 = 0.1
-    engine = _engine(
-        "severity",
-        perception_severity_form="threshold_linear",
-        perception_severity_threshold=s0,
+    # Monotone in severity, and unflooded agents stay at the floor.
+    assert rp[0] > rp[1] > rp[2] > rp[3] > dec.risk_perc_min
+    assert np.allclose(rp[sev.size:], dec.risk_perc_min, atol=1e-6)
+    # Exact formula.
+    assert np.allclose(
+        rp[: sev.size],
+        dec.risk_perc_max * sev ** gamma + dec.risk_perc_min,
+        rtol=1e-5,
     )
-    dec = engine.config.decision
-    rp = _peak(engine, np.array([1.0, 0.55, 0.05]))
-    # Total loss -> full spike; midpoint -> half; below threshold -> none.
-    assert np.isclose(rp[0], dec.risk_perc_max + dec.risk_perc_min)
-    assert np.isclose(rp[1], dec.risk_perc_max * 0.5 + dec.risk_perc_min)
-    assert np.isclose(rp[2], dec.risk_perc_min, atol=1e-6)
 
 
-def test_invalid_form_and_params_raise():
-    """Unknown form / bad form parameters raise ValueError."""
+def test_gamma_above_one_suppresses_small_floods():
+    """gamma > 1 is the near-miss arm: small floods barely register.
+
+    This is what replaced the retired ``threshold_linear`` form, so it has
+    to actually behave like a soft deadband.
+    """
+    convex = _peak(_engine("severity", perception_severity_exponent=2.0),
+                   np.array([0.1]))[0]
+    concave = _peak(_engine("severity", perception_severity_exponent=0.5),
+                    np.array([0.1]))[0]
+    floor = _engine("severity").config.decision.risk_perc_min
+    rp_max = _engine("severity").config.decision.risk_perc_max
+
+    # 10 % damage: 1 % of the spike at gamma=2 against ~32 % at gamma=0.5.
+    assert np.isclose(convex - floor, rp_max * 0.01, rtol=1e-4)
+    assert (convex - floor) < 0.05 * (concave - floor)
+
+
+def test_zero_exponent_is_rejected():
+    """gamma = 0 must raise rather than spike every agent.
+
+    ``0.0 ** 0.0 == 1.0`` in NumPy, so without the guard even agents that
+    never flooded would get the full peak.
+    """
+    engine = _engine("severity", perception_severity_exponent=0.0)
+    with pytest.raises(ValueError, match="perception_severity_exponent"):
+        engine.update_flood_experience(
+            np.zeros(engine.n_agents, dtype=bool), np.zeros(engine.n_agents)
+        )
+    engine = _engine("severity", perception_severity_exponent=-1.0)
+    with pytest.raises(ValueError, match="perception_severity_exponent"):
+        engine.update_flood_experience(
+            np.zeros(engine.n_agents, dtype=bool), np.zeros(engine.n_agents)
+        )
+
+
+@pytest.mark.parametrize(
+    "form, gamma_hint",
+    [("saturating_exp", "0.5"), ("threshold_linear", "1.3")],
+)
+def test_retired_forms_raise_a_directed_error(form, gamma_hint):
+    """The removed forms must name their measured gamma equivalent."""
+    engine = _engine("severity", perception_severity_form=form)
+    with pytest.raises(ValueError, match="removed") as excinfo:
+        engine.update_flood_experience(
+            np.zeros(engine.n_agents, dtype=bool), np.zeros(engine.n_agents)
+        )
+    message = str(excinfo.value)
+    assert "perception_severity_exponent=" + gamma_hint in message
+
+
+def test_unknown_form_raises():
+    """An unrecognised form is reported as such, not as a retired one."""
     engine = _engine("severity", perception_severity_form="nope")
-    with pytest.raises(ValueError, match="perception_severity_form"):
-        engine.update_flood_experience(
-            np.zeros(engine.n_agents, dtype=bool), np.zeros(engine.n_agents)
-        )
-    engine = _engine(
-        "severity",
-        perception_severity_form="saturating_exp",
-        perception_severity_rate=0.0,
-    )
-    with pytest.raises(ValueError, match="perception_severity_rate"):
-        engine.update_flood_experience(
-            np.zeros(engine.n_agents, dtype=bool), np.zeros(engine.n_agents)
-        )
-    engine = _engine(
-        "severity",
-        perception_severity_form="threshold_linear",
-        perception_severity_threshold=1.0,
-    )
-    with pytest.raises(ValueError, match="perception_severity_threshold"):
+    with pytest.raises(ValueError, match="only supported form"):
         engine.update_flood_experience(
             np.zeros(engine.n_agents, dtype=bool), np.zeros(engine.n_agents)
         )
 
 
-def test_legacy_binary_mode_ignores_form_fields():
-    """legacy() (binary mode) is unaffected by non-default form settings."""
+def test_binary_mode_ignores_the_severity_fields():
+    """Binary mode must not touch the power-law branch at all."""
     ref = _engine("binary")
-    alt = _engine("binary", perception_severity_form="threshold_linear")
+    alt = _engine("binary", perception_severity_exponent=3.0)
     flooded = np.zeros(ref.n_agents, dtype=bool)
     flooded[0] = True
     ref.update_flood_experience(flooded)

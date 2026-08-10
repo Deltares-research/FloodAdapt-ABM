@@ -31,10 +31,8 @@ results depend on it (H = high, M = medium, L = low).
 | `risk_perc_max` | Perception spike right after a flood | 2.0 | Tierolf et al. (2023), France | H | Post-flood household survey |
 | `risk_perc_coef` | Speed of perception decay (memory length) | -3.6 | Tierolf et al. (2023), France | H | Repeated surveys, or insurance drop-off rates after floods |
 | `risk_perc_min` | Baseline perception with no flood memory | 0.01 | Tierolf et al. (2023) | M | Survey of never-flooded households |
-| `perception_severity_form` | Shape of the severity response | `"power"` | This project (beyond native) | H | Survey: stated risk perception vs experienced damage |
-| `perception_severity_exponent` (γ) | Concavity of the power form | 0.5 | This project, availability-heuristic argument | H | Same survey |
-| `perception_severity_rate` (k) | Rate of the saturating form | 3.0 | This project | M | Same survey |
-| `perception_severity_threshold` (s0) | Deadband of the threshold form | 0.1 | This project | M | Same survey |
+| `perception_severity_exponent` (γ) | **The** shape of the severity response `peak = rp_max · s^γ`, where s = realised damage / max potential damage in [0, 1]: concave (< 1), linear (= 1), near-miss (> 1) | 0.5 | This project, availability-heuristic argument. **Assumed, not measured**; see "Inherited constants" | H | Survey: stated risk perception vs experienced damage (Tier 3); else Tier 1 sweep |
+| `perception_severity_form` | Pinned to `"power"`; kept only so old configs get a directed migration error | `"power"` | This project (beyond native) | – | Not a calibration target |
 | `flood_significance_threshold` | Minimum damage that counts as a flood experience | 0.01 | This project | L | Survey ("did you consider this a flood?") |
 | `risk_aversion` | Curvature of the utility function | 1.0 | DYNAMO-M settings | M | Economics literature priors (0.5 to 2) |
 | `discount_rate` | Time preference in the NPV | 0.032 | DYNAMO-M settings | M | Standard public rates; sensitivity only |
@@ -44,12 +42,12 @@ results depend on it (H = high, M = medium, L = low).
 | `rank_correlation` (value proxy) | Income-to-building-value sorting strength | 0.5 | Household-finance literature (0.4 to 0.6) | M | Bounds [0.3, 0.7]; replaced entirely by a spatial income join |
 | wealth-to-income table (`_WEALTH_RATIO_*`, not a config field) | Wealth multiplier by income percentile, used by the default income mode | 6 anchor points, `[0, 1.06, 4.14, 4.19, 5.24, 6]` at percentiles `[0, 20, 40, 60, 80, 100]` | Native `decision_module.py:27-29`, **no citation given** | M | **Not calibrated here.** Would need a household wealth survey (in the US, the Survey of Consumer Finances) |
 | `income_to_wealth_ratio` | Scalar wealth multiplier, explicit-income runs only | 4.14 | Native table, 40th percentile | L | Same source; unused by the default income mode |
-| `adaptation_total_cost` | One-off dry-floodproofing cost | None (legacy fraction) | Native: 10,800 EUR France, GDP-scaled | H | Local contractor quotes, FEMA mitigation cost tables |
+| `adaptation_total_cost` | One-off dry-floodproofing cost | None (falls back to a fraction of `max_pot_dmg`) | Native: 10,800 EUR France, GDP-scaled | H | Local contractor quotes, FEMA mitigation cost tables |
 | `expenditure_cap` | Max share of income spent on adaptation or premium | 0.06 | DYNAMO-M settings | H | Household budget surveys |
-| `insurance_pricing` | Rating rule: `"community"` (one flat premium) or `"risk_based"` (own expected loss) | `"community"` | Native rule / this project | n/a | Scenario input, not calibrated |
-| `insurance_deductible` | Damage share still paid when insured | 0.1 | Native hard-coded value | L | Actual policy terms (NFIP) |
-| `insurance_loading` | Premium markup for insurer costs | 1.0 | This project | L | Industry loss ratios |
-| `insurance_subsidy` | Premium share paid publicly | 0.0 | This project (policy lever) | n/a | Scenario input, not calibrated |
+| `insurance_pricing` | Rating rule: `"community"` (one flat premium) or `"risk_based"` (own expected loss) | `"community"` | Native rule / this project; the trade-off literature is in architecture §9.7 | n/a | Scenario input, not calibrated: pick the rating rule of the scheme under study |
+| `insurance_deductible` | Damage share still paid when insured | 0.1 | Native hard-coded value | L | Policy terms of the modelled scheme (e.g. NFIP deductible options) |
+| `insurance_loading` | What the insurer adds on top of the expected-loss price | 1.0 (at cost) | This project | L | `loading ≈ 1 / loss ratio` of the modelled scheme (claims paid / premiums collected); a 0.75 loss ratio gives ~1.3. Explainer in architecture §9.7 |
+| `insurance_subsidy` | Premium share paid publicly | 0.0 (no intervention) | This project (policy lever) | n/a | Sweep, do not calibrate. A US-anchored grid is {0, 0.3, 0.6, 0.9}: 0.6 mirrors the NFIP's historical implicit subsidy (pre-FIRM rates were 35-40 % of full-risk; GAO-13-607) |
 | `nuisance_freq_threshold` | Drop events more frequent than this | None (1.0 for Charleston) | Site decision | M | Event-set inspection |
 | `lifespan_dryproof` | Service life of floodproofing | 75 | DYNAMO-M settings | L | Engineering literature |
 
@@ -60,8 +58,8 @@ results depend on it (H = high, M = medium, L = low).
 Verification means checking the code does what the equations say. This is
 not calibration, but it must come first. The repository ships it: the
 parity gates prove the ported SEU kernels match native DYNAMO-M to a
-relative error below 1e-4, and the golden regression pins the legacy
-behaviour bit-exactly (`pytest tests/ -q`, `verification/`).
+relative error below 1e-4, and the three time-ownership drivers agree
+bit-for-bit (`pytest tests/ -q`, `verification/`).
 
 ### Tier 1: sensitivity screening (free)
 
@@ -70,8 +68,8 @@ results. A parameter that does not move the results does not need
 calibration.
 
 - Start with one-at-a-time sweeps on the high-priority rows above. For the
-  perception form: run γ at 0.25 / 0.5 / 1.0, then the other two forms at
-  their defaults. Compare adoption and damage trajectories.
+  perception response there is exactly one axis: run γ at
+  0.25 / 0.5 / 1.0 / 2.0 and compare adoption and damage trajectories.
 - If interactions matter, use Morris screening. Morris screening is a
   standard method that varies parameters along random one-step paths and
   ranks them by the mean and spread of the output changes. It needs only
@@ -117,8 +115,10 @@ the middle household, the mean sits at or above the median, and the gap
 between them measures the spread. For a lognormal both conversions are
 exact:
 
-- `median = exp(mu)`, so `mu = ln(median)`;
-- `mean / median = exp(sigma^2 / 2)`, so `sigma = sqrt(2 ln(mean/median))`.
+$$\mu = \ln(\text{median}), \qquad
+\frac{\text{mean}}{\text{median}} = e^{\sigma^2/2}
+\;\Rightarrow\;
+\sigma = \sqrt{2 \ln\!\left(\frac{\text{mean}}{\text{median}}\right)}.$$
 
 So the pair is not "mean and standard deviation". It is the median, which
 fixes the centre, and `mean_median_inc_ratio`, which fixes the spread. Both
@@ -136,10 +136,11 @@ insurance decision. The draw uses a dedicated seed-derived generator, so
 building the distribution never perturbs the event-draw or decision RNG
 streams and the bit-parity gates stay valid.
 
-For Charleston the measured pair gives `sigma = sqrt(2 ln(1.4879)) = 0.892`.
-The default ratio 1.15 implies `sigma = 0.529`, a much narrower and, for
-this county, plainly wrong distribution: it predicts 2.4 % of households
-above $200k against 17.2 % observed.
+For Charleston the measured pair gives
+$\sigma = \sqrt{2 \ln 1.4879} = 0.892$. The default ratio 1.15 implies
+$\sigma = 0.529$, a much narrower and, for this county, plainly wrong
+distribution: it predicts 2.4 % of households above \$200k against 17.2 %
+observed.
 
 **What "calibrating the marginal" actually means.** There are exactly two
 free parameters on this axis, `median_income` and `mean_median_inc_ratio`,
@@ -224,10 +225,8 @@ mean_median_inc_ratio = 131,674 / 88,494 = 1.4879
 **Step 4. Convert to the lognormal's own parameters.** Both conversions are
 exact, no fitting involved:
 
-```
-mu    = ln(88,494)              = 11.3907
-sigma = sqrt(2 ln 1.4879)       = 0.8915
-```
+$$\mu = \ln(88{,}494) = 11.3907, \qquad
+\sigma = \sqrt{2 \ln 1.4879} = 0.8915.$$
 
 **Step 5. Assign them.** Two parameters, two published numbers:
 
@@ -295,7 +294,15 @@ validation.
 ### Inherited constants that are not calibrated
 
 Not every number in the model is measured, and the honest move is to say
-which. Two stand out.
+which. Three stand out.
+
+**The severity exponent γ.** `perception_severity_exponent = 0.5` is this
+project's default, argued from the availability heuristic, not fitted to any
+data — its provenance in the inventory is literally "this project". It is not
+calibrated for Charleston, and it is influential there (a factor of three on
+final adoption across γ ∈ [0.25, 3]; see Tier 3). Sweep it in Tier 1, or fit
+it from the Tier 3 survey; until one of those is done, report 0.5 in the same
+assumed-not-measured tone as the two constants below.
 
 **The wealth-to-income table.** Wealth is not sampled independently; it is
 `ratio(percentile) * income`, interpolated from six anchor points that rise
@@ -313,28 +320,57 @@ measurement. There is no per-building income ground truth to fit it against.
 Report it as an assumption with bounds [0.3, 0.7].
 
 The contrast worth keeping in view: the income *marginal* is measured, in the
-sense that two published numbers determine it exactly. The wealth multiplier
-and the rank correlation are assumed. A calibration report should not present
-them in the same tone.
+sense that two published numbers determine it exactly. The severity exponent,
+the wealth multiplier and the rank correlation are assumed. A calibration
+report should not present them in the same tone.
 
 ### Tier 3: a small survey (the first real cost)
 
 Only needed if Tier 1 shows the perception parameters matter and Tier 2
 patterns cannot pin them down. A short household survey (n in the low
-hundreds) can discriminate the severity forms:
+hundreds) can estimate the severity response:
 
 1. Ask flooded households for the approximate damage as a share of their
-   home value, and their current flood-risk concern on a fixed scale.
+   home value, and their current flood-risk concern on a fixed scale. That
+   share is the model's **damage severity** $s$: realised damage divided by
+   the building's maximum potential damage, clipped to $[0, 1]$, so $s = 0.25$
+   means the flood destroyed a quarter of what the home could lose.
 2. Ask when the flood happened. The concern-versus-years-since curve
    fits the decay pair (`risk_perc_max`, `risk_perc_coef`).
-3. Plot concern against damage share. Fit all three severity forms by
-   least squares. Keep the best-fitting form. Each form has one free
-   parameter, so a small sample is enough to compare them.
+3. Plot concern against damage share and fit **γ** by least squares on the
+   model's response, $\text{concern} = \mathrm{rp}_{\max}\, s^{\gamma}$. One
+   free parameter, so a small sample is enough. Taking logs makes it a
+   straight-line fit with slope γ:
+
+   $$\ln(\text{concern}) = \ln(\mathrm{rp}_{\max}) + \gamma \ln s.$$
+
 4. Include never-flooded households. Their mean concern estimates
    `risk_perc_min`.
 
 Questions map one-to-one to parameters, which keeps the survey short and
 the analysis simple.
+
+The estimated γ then lands in one
+of the interpretable regions below, which is what a write-up should report.
+
+| Fitted γ | Reading |
+|---|---|
+| γ well below 1 | Availability heuristic dominates: households react to *any* flood, nearly regardless of size. γ → 0 is the native/binary model. |
+| γ ≈ 0.5 | The shipped default. A 25 %-damage flood produces half the maximum spike. |
+| γ ≈ 1 | Concern is proportional to damage. |
+| γ above 1 | Near-miss behaviour: small floods are discounted. γ = 2 gives a 10 %-damage flood only 1 % of the spike. |
+
+![The severity response across γ](images/perception_severity_gamma.png)
+
+If the survey is not affordable, run the sweep in Tier 1 and report the outcome
+range across γ as a stated uncertainty rather than picking a value. On the real
+Charleston table γ is influential enough to be worth reporting either way: over
+γ ∈ [0.25, 3] final floodproofing adoption moves by a factor of three
+(5.5 % to 1.9 %) and cumulative damage by 50 % (2,631 to 3,957 M$). "The
+response shape does not matter" is therefore **not** a safe default assumption
+here; it has to be shown for the specific question.
+
+![Measured outcomes across γ on the real Charleston table](images/perception_gamma_outcomes.png)
 
 ### Tier 4: validation
 

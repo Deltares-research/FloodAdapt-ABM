@@ -95,7 +95,7 @@ The `DecisionConfig` defaults implement the fixes from the 2026-07 review (ratio
 | `max_events_per_year` | `None` | No discard cap (damage is already bounded per event by `max_pot_dmg`) |
 | `nuisance_freq_threshold` | `None` | Set `1.0` for event sets with sub-annual (`freq > 1`) events — recommended for the real Charleston table |
 | `seu_prob_mode` | `"exceedance"` | SEU integral uses `p = 1 − e^(−freq)` exceedance probabilities |
-| `perception_mode` | `"severity"` | Post-flood risk-perception spike scales with damage severity (concave, γ = 0.5) |
+| `perception_mode` | `"severity"` | Post-flood risk-perception spike scales as `s^γ`, where `s` = realised damage / max potential damage (in [0, 1]) and γ = `perception_severity_exponent` = 0.5. γ is the single shape parameter: < 1 concave, = 1 linear, > 1 near-miss; an uncalibrated default worth sweeping (see the method guide) |
 | `income_mode` | `"synthetic_lognormal"` | Native DYNAMO-M income port — income independent of building value, so affordability genuinely binds |
 | `include_insurance` | `False` | Optional third decision option (ported native `calcEU_insure`, 10 % deductible) |
 | `insurance_pricing` | `"community"` | Premium rating: flat mean-EAD rate (native) or `"risk_based"` (each household's own expected payout). Levers: `insurance_loading`, `insurance_subsidy` |

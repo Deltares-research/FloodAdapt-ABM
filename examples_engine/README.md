@@ -30,7 +30,7 @@ python 01_quickstart.py
 | 05 | `05_dynamo_live_parity.py` | **Phase 4a**: `DynamoLiveRule` drives *native* DYNAMO-M as a parity oracle proving the ported `SEURule` has not drifted. Guarded/optional dependency. |
 | 06 | `06_mesa_native_driving.py` | **Phase 4b**: invert time ownership — `FloodAdaptSLRModel.step()` ticks drive the shared kernels (mirrors DYNAMO-M `SLRModel.run_model()`); reproduces `engine.run` bit-for-bit. |
 | 07 | `07_mesa_native_full.py` | **Phase 4b-full**: native-class integration — `FloodAdaptSLRModelFull` subclasses the **real honeybees `Model`** (owns time) and routes decisions through the native DYNAMO-M `DecisionModule`; triple-parity `full == scaffold == engine.run`. |
-| 08 | `08_income_perception_insurance.py` | The post-review features: income percentiles (regional data vs the building-value proxy), the three `perception_severity_form` options, Poisson rate recovery, and `insurance_pricing` community vs risk-based (plus subsidy). |
+| 08 | `08_income_perception_insurance.py` | The post-review features: income percentiles (regional data vs the building-value proxy), the `perception_severity_exponent` (γ) sweep, Poisson rate recovery, and `insurance_pricing` community vs risk-based (plus subsidy). |
 
 `_shared.py` is a helper (not an example): it bootstraps `sys.path` and provides
 the dataset. You never need to run it directly.

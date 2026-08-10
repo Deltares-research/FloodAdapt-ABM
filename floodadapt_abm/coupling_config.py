@@ -228,12 +228,11 @@ class DecisionConfig:
         How a realised flood feeds the risk-perception spike.
 
         * ``"severity"`` — the post-flood perception peak scales with the
-          damage severity ``s = realised / max_pot_dmg`` through the
-          functional form selected by ``perception_severity_form``
-          (default: concave power law), so a nuisance flood and a
-          catastrophe are no longer identical to the agent.  A deliberate
-          improvement beyond native DYNAMO-M, whose trigger is binary
-          (``flood_risk.py:619``).
+          damage severity ``s = realised / max_pot_dmg`` through the power
+          law ``s ** perception_severity_exponent``, so a nuisance flood
+          and a catastrophe are no longer identical to the agent.  A
+          deliberate improvement beyond native DYNAMO-M, whose trigger is
+          binary (``flood_risk.py:619``).
         * ``"binary"`` — legacy/native: any positive damage produces the
           full ``risk_perc_max`` spike.
         Default: ``"severity"``.
@@ -247,48 +246,32 @@ class DecisionConfig:
     perception_severity_form : str
         Functional form mapping damage severity ``s = realised /
         max_pot_dmg`` (clipped to [0, 1]) to the post-flood perception peak
-        under ``perception_mode="severity"``.  All three forms are
-        one-parameter families (identifiable from small survey samples) and
-        agree at ``s = 1`` (total loss reproduces the full legacy spike):
-
-        * ``"power"`` — ``peak = risk_perc_max * s ** gamma`` with
-          ``gamma = perception_severity_exponent``.  Concave with infinite
-          slope at ``s = 0``: even small floods produce large spikes
-          (availability heuristic).  **Preferred default.**
-        * ``"saturating_exp"`` — ``peak = risk_perc_max *
-          (1 - exp(-k*s)) / (1 - exp(-k))`` with
-          ``k = perception_severity_rate``.  Concave like the power law but
-          with *finite* slope at ``s = 0`` — the alternative hypothesis
-          that small floods produce proportionally small responses.
-        * ``"threshold_linear"`` — ``peak = risk_perc_max *
-          clip((s - s0) / (1 - s0), 0, 1)`` with
-          ``s0 = perception_severity_threshold``.  No perception response
-          below the damage threshold ``s0``, then linear — the qualitatively
-          opposite (near-miss/threshold) hypothesis.
-
-        See ``docs/calibration_validation_guide.md`` for the recommended
-        analysis order and how to discriminate the forms with survey data.
+        under ``perception_mode="severity"``.  ``"power"`` is the **only**
+        supported value: ``peak = risk_perc_max * s ** gamma`` with
+        ``gamma = perception_severity_exponent``.  See ``docs/architecture.md`` ("Severity response").
         Default: ``"power"``.
     perception_severity_exponent : float
-        Exponent ``gamma`` of the concave severity scaling used by
-        ``perception_severity_form="power"``:
-        ``peak = risk_perc_max * clip(severity, 0, 1) ** gamma``.
-        ``gamma = 0.5`` (default) encodes diminishing sensitivity — a flood
-        damaging 25 % of the home already triggers ~71 % of the maximum
-        spike — consistent with the availability-heuristic literature the
-        perception model is built on.  ``gamma -> 0`` recovers the
-        binary/native response; ``gamma = 1`` is linear.  Calibratable.
+        Exponent ``gamma > 0`` of the severity scaling:
+        ``peak = risk_perc_max * clip(severity, 0, 1) ** gamma``.  This is
+        the single shape parameter of the perception response, and it spans
+        the whole hypothesis range:
+
+        * ``gamma -> 0`` — approaches the binary/native response (any flood
+          gives the full spike).  ``gamma = 0`` exactly is **rejected**:
+          ``0.0 ** 0.0 == 1.0`` would spike every agent, including those
+          that never flooded.  Use ``perception_mode="binary"`` for the
+          exact native behaviour.
+        * ``gamma < 1`` — concave (availability heuristic): small floods
+          already spike perception strongly.  ``gamma = 0.5`` (default)
+          gives a 25 %-damage flood 50 % of the maximum spike, and a
+          50 %-damage flood ~71 %.
+        * ``gamma = 1`` — linear, the damage-proportional response.
+        * ``gamma > 1`` — convex (near-miss hypothesis): small floods are
+          largely ignored.  ``gamma = 2`` gives a 10 %-damage flood only
+          1 % of the spike.
+
+        Calibratable, and the parameter a sensitivity sweep should vary.
         Default: ``0.5``.
-    perception_severity_rate : float
-        Rate ``k > 0`` of the ``"saturating_exp"`` severity form (ignored by
-        the other forms).  Larger ``k`` saturates faster (more concave);
-        ``k -> 0`` approaches linear.
-        Default: ``3.0``.
-    perception_severity_threshold : float
-        Damage-severity threshold ``s0`` in ``[0, 1)`` of the
-        ``"threshold_linear"`` severity form (ignored by the other forms):
-        floods below ``s0`` produce no perception spike.
-        Default: ``0.1``.
     income_mode : str
         Fallback used to construct per-agent incomes when no
         ``income_per_agent`` array is supplied.  ``"synthetic_lognormal"``
@@ -407,8 +390,6 @@ class DecisionConfig:
     flood_significance_threshold: float = 0.01
     perception_severity_form: str = "power"
     perception_severity_exponent: float = 0.5
-    perception_severity_rate: float = 3.0
-    perception_severity_threshold: float = 0.1
     income_mode: str = "synthetic_lognormal"
     median_income: float = 70_000.0
     mean_median_inc_ratio: float = 1.15

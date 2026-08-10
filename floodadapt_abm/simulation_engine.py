@@ -242,15 +242,14 @@ class SimulationEngine:
         * ``"binary"`` (legacy/native): ``peak = risk_perc_max`` for every
           flooded agent — a nuisance flood and a catastrophe are identical
           (native DYNAMO-M ``flood_risk.py:619`` behaves the same).
-        * ``"severity"``: the peak scales with damage severity through one
-          of three one-parameter functional forms selected by
-          ``perception_severity_form`` (see :meth:`_severity_peak` and the
-          ``DecisionConfig`` docstring): ``"power"`` (default, concave
-          power law — a total loss reproduces the full legacy spike,
-          gamma = 0.5: 25 % damage -> ~71 % of the max),
-          ``"saturating_exp"`` (concave with finite slope at zero
-          severity), or ``"threshold_linear"`` (no response below a damage
-          threshold).  A deliberate improvement beyond native DYNAMO-M.
+        * ``"severity"``: the peak scales with damage severity through the
+          power law ``peak = risk_perc_max * s ** gamma`` (see
+          :meth:`_severity_peak` and the ``DecisionConfig`` docstring).  A
+          total loss reproduces the full legacy spike; at the default
+          gamma = 0.5, 25 % damage gives 50 % of the max and 50 % damage
+          gives ~71 %.  ``gamma`` spans concave (< 1), linear (= 1) and
+          near-miss (> 1) responses.  A deliberate improvement beyond
+          native DYNAMO-M.
 
         Parameters
         ----------
@@ -292,60 +291,80 @@ class SimulationEngine:
             + self._dec.risk_perc_min
         ).astype(np.float32)
 
+    #: Retired severity forms, mapped to the equivalent power exponent at
+    #: their old defaults.  Measured on the synthetic and the real Charleston
+    #: table, which agree to ~0.05 in gamma; see ``docs/architecture.md``.
+    #: The equivalence depends on the severity distribution, so re-fit if
+    #: yours differs markedly from Charleston's.
+    _RETIRED_SEVERITY_FORMS = {
+        "saturating_exp": ("perception_severity_rate k=3.0", 0.5),
+        "threshold_linear": ("perception_severity_threshold s0=0.1", 1.3),
+    }
+
     def _severity_peak(self) -> np.ndarray:
         """
         Map each agent's last flood severity to its perception peak.
 
-        Dispatches on ``perception_severity_form``.  All forms map severity
-        ``s`` in [0, 1] (``state.last_flood_severity``, already clipped) to a
-        peak in ``[0, risk_perc_max]``, are monotone in ``s``, and agree at
-        ``s = 1`` (total loss -> the full legacy ``risk_perc_max`` spike).
-        They differ in the small-flood response — the property survey data
-        can discriminate (see ``docs/calibration_validation_guide.md``):
+        The single supported form is the power law
+        ``peak = risk_perc_max * s ** gamma``, where ``s`` is
+        ``state.last_flood_severity`` in [0, 1] (already clipped) and
+        ``gamma`` is ``perception_severity_exponent``.  It is monotone in
+        ``s`` and pinned at both ends: ``s = 0`` gives no spike and
+        ``s = 1`` gives the full ``risk_perc_max`` spike.
 
-        * ``"power"``: infinite slope at ``s = 0`` (small floods still
-          spike perception strongly);
-        * ``"saturating_exp"``: finite slope at ``s = 0``;
-        * ``"threshold_linear"``: zero response below ``s0``.
+        ``gamma`` alone spans the whole hypothesis range, which is why it is
+        the only form (see ``docs/architecture.md``, "Severity response"):
+
+        * ``gamma < 1`` — concave, the availability heuristic: small floods
+          already spike perception strongly.  ``gamma -> 0`` approaches the
+          binary/native response.
+        * ``gamma = 1`` — linear, the damage-proportional response.
+        * ``gamma > 1`` — convex, the near-miss hypothesis: small floods are
+          largely ignored.
 
         Returns
         -------
         np.ndarray
             Per-agent perception peak, shape ``(n_agents,)``.
+
+        Raises
+        ------
+        ValueError
+            If ``perception_severity_form`` is not ``"power"``, or if
+            ``perception_severity_exponent`` is not strictly positive.
         """
         form = self._dec.perception_severity_form
-        if form == "power":
-            peak = self._dec.risk_perc_max * (
-                self.state.last_flood_severity
-                ** self._dec.perception_severity_exponent
-            )
-        elif form == "saturating_exp":
-            k = self._dec.perception_severity_rate
-            if k <= 0.0:
+        if form != "power":
+            retired = self._RETIRED_SEVERITY_FORMS.get(form)
+            if retired is not None:
+                old_param, gamma = retired
                 raise ValueError(
-                    "perception_severity_rate must be > 0 for "
-                    f"perception_severity_form='saturating_exp'; got {k}."
+                    f"perception_severity_form={form!r} was removed in "
+                    "2026-08: its outcomes lie on the power-law curve, so it "
+                    "was a reparameterisation rather than a distinct "
+                    f"hypothesis.  Replace it with "
+                    f"perception_severity_form='power' and "
+                    f"perception_severity_exponent={gamma} "
+                    f"(the measured equivalent of {old_param})."
                 )
-            peak = self._dec.risk_perc_max * (
-                -np.expm1(-k * self.state.last_flood_severity)
-                / -np.expm1(-k)
-            )
-        elif form == "threshold_linear":
-            s0 = self._dec.perception_severity_threshold
-            if not 0.0 <= s0 < 1.0:
-                raise ValueError(
-                    "perception_severity_threshold must be in [0, 1) for "
-                    f"perception_severity_form='threshold_linear'; got {s0}."
-                )
-            peak = self._dec.risk_perc_max * np.clip(
-                (self.state.last_flood_severity - s0) / (1.0 - s0), 0.0, 1.0
-            )
-        else:
             raise ValueError(
-                f"Unknown perception_severity_form {form!r}; expected "
-                "'power', 'saturating_exp' or 'threshold_linear'."
+                f"Unknown perception_severity_form {form!r}; 'power' is the "
+                "only supported form."
             )
-        return peak
+
+        gamma = self._dec.perception_severity_exponent
+        if gamma <= 0.0:
+            # gamma == 0 would make 0.0 ** 0.0 == 1.0, spiking *every*
+            # agent to the full peak including those that never flooded.
+            raise ValueError(
+                "perception_severity_exponent must be > 0; got "
+                f"{gamma}.  Use a small positive value to approach the "
+                "binary/native response, or perception_mode='binary' for it "
+                "exactly."
+            )
+        return self._dec.risk_perc_max * (
+            self.state.last_flood_severity ** gamma
+        )
 
     def _compute_premium_offer(self) -> np.ndarray:
         """

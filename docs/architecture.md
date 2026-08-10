@@ -519,6 +519,31 @@ optionally the expected utilities behind each decision.
 
 ## 9. Details
 
+### Notation
+
+The submodels below use a consistent set of symbols, defined once here. Each maps
+to a config field or a derived quantity.
+
+| Symbol | Meaning | In the model |
+|---|---|---|
+| $f_e$ | Annual occurrence rate of event $e$ (events/year) | `freq` attribute of the lookup table |
+| $D_{i,e}$ | Damage to household $i$ in event $e$ at the current sea level | interpolated from the lookup table |
+| $p$ | Annual exceedance probability of an event | $p = 1 - e^{-f}$ under `seu_prob_mode="exceedance"` |
+| $s_i$ | Damage severity: the share of household $i$'s maximum potential damage realised in a flood, clipped to $[0, 1]$ | $s_i = \min(D_i / \text{max\_pot\_dmg}_i,\, 1)$ |
+| $\gamma$ | Severity exponent of the perception response | `perception_severity_exponent`, default 0.5 |
+| $\tau_i$ | Years since household $i$'s last significant flood | `flood_timer` |
+| $c$ | Perception decay coefficient | `risk_perc_coef`, default $-3.6$ |
+| $\sigma$ | CRRA risk-aversion coefficient | `risk_aversion`, default 1 (log utility) |
+| $r$ | Annual discount rate | `discount_rate`, default 0.032 |
+| $T$ | Decision horizon in years | `decision_horizon`, default 15 |
+| $W, Y, A$ | Wealth, income, amenity value of a household | derived; see §9.5 |
+| $D_i$ | Expected damages of household $i$ under the strategy being evaluated | derived |
+| $\mathrm{EAD}_i$ | Expected annual damage, $\sum_e f_e D_{i,e}$ | derived (premium base) |
+| $d$ | Insurance deductible | `insurance_deductible`, default 0.1 |
+| $\lambda$ | Premium loading | `insurance_loading`, default 1.0 |
+| $\sigma_s$ | Premium subsidy share | `insurance_subsidy`, default 0.0 |
+| $r_L, L$ | Loan interest rate and duration for adaptation | `interest_rate` (0.04), `loan_duration` (16) |
+
 ### 9.1 Initialisation
 
 All households start non-adapted and uninsured with `flood_timer = 99`, which
@@ -538,8 +563,8 @@ trajectory itself.
 ### 9.3 Submodel: the hazard draw
 
 Event frequencies are annual occurrence **rates**. The default draw is
-therefore **Poisson**: each event occurs `n ~ Poisson(freq · dt)` times per year
-(`event_draw_mode="poisson"`), with no discard cap
+therefore **Poisson**: each event $e$ occurs $n_e \sim \mathrm{Poisson}(f_e)$
+times per year (`event_draw_mode="poisson"`), with no discard cap
 (`max_events_per_year=None`). Realised damage is bounded per occurrence by
 `max_pot_dmg`.
 
@@ -554,14 +579,14 @@ happen this year". The benefits are concrete:
 2. an event with rate 3 can genuinely happen 0, 2 or 5 times in one year;
 3. nothing is clipped or discarded, so simulated damage statistics match the
    hazard input;
-4. the simple sum `Σ freq · damage` becomes the exact expected annual damage,
-   which the insurance premium builds on.
+4. the simple sum $\mathrm{EAD}_i = \sum_e f_e\, D_{i,e}$ becomes the exact
+   expected annual damage, which the insurance premium builds on.
 
 This differs deliberately from DYNAMO-M's `stochastic_flood`
 (`flood_risk.py:583`), which performs a single draw and allows at most one
 flood per year against a fixed return-period set.
 
-The **legacy** draw (one Bernoulli trial per event with `p = min(freq·dt, 1)`
+The **legacy** draw (one Bernoulli trial per event with $p_e = \min(f_e, 1)$
 and a random cap of 4) clipped sub-annual events to certainty and discarded
 rare extremes at the same rate as nuisance floods. It is preserved bit-exactly
 as the `"bernoulli_clip"` option, which notebook 2 uses for its matched-hazard
@@ -574,72 +599,168 @@ consistently: a near-certain event cannot sit on an exceedance curve and would
 hit the 0.998 perceived-probability cap regardless.
 
 **Exceedance conversion.** On the decision side, `seu_prob_mode="exceedance"`
-converts rates to annual exceedance probabilities `p = 1 − e^(−freq)` before
-the trapezoidal integration, resolving the historical dual use of one array as
+converts rates to annual exceedance probabilities
+
+$$p_e = 1 - e^{-f_e},$$
+
+the exact probability of at least one Poisson arrival in a year, before the
+trapezoidal integration. This resolves the historical dual use of one array as
 both rate and probability.
 
 ### 9.4 Submodel: risk perception
 
-Risk perception is a deterministic decay function of `flood_timer`, not a
-random variable:
+Risk perception is a deterministic decay function of the flood timer
+$\tau_i$, not a random variable. Household $i$'s perception multiplier is
 
-```
-risk_perception = peak x 1.6^(risk_perc_coef x flood_timer) + risk_perc_min
-```
+$$\mathrm{rp}_i = P_i \cdot 1.6^{\,c\,\tau_i} + \mathrm{rp}_{\min},$$
 
-Defaults from Tierolf et al. (2023, §2.2): `risk_perc_max = 2.0`,
-`risk_perc_min = 0.01`, `risk_perc_coef = -3.6`, base `1.6`. With
-`flood_timer = 99` this evaluates to essentially the minimum; a flood resets
-the timer to 0 and perception spikes to `peak`.
+where $P_i$ is the post-flood peak (below), $c$ the decay coefficient and
+$\mathrm{rp}_{\min}$ the baseline floor. Defaults from Tierolf et al. (2023,
+§2.2): $\mathrm{rp}_{\max} = 2.0$, $\mathrm{rp}_{\min} = 0.01$, $c = -3.6$,
+base $1.6$. With $\tau_i = 99$ this evaluates to essentially the minimum; a
+flood resets the timer to 0 and perception spikes to $P_i$.
 
 The base 1.6 is hard-coded in native DYNAMO-M (`flood_risk.py:650-651`); the
 `base` key in its `settings.yml` is never read. The port mirrors this as
 `_RISK_PERC_BASE = 1.6`.
 
-**Severity response.** Under `perception_mode="severity"` the peak is not the
-fixed `risk_perc_max`: it scales with damage severity `s = realised /
-max_pot_dmg` (clipped to `[0, 1]`) through one of three forms
+**Severity response.** Under `perception_mode="severity"` the peak $P_i$ is not
+the fixed $\mathrm{rp}_{\max}$: it scales with the **damage severity** $s_i$,
+the share of the household's maximum potential damage realised in the flood,
+through a **single one-parameter form**, the power law
 (`simulation_engine.py::_severity_peak`). The decay law is unchanged; only the
-starting height varies.
+starting height varies:
 
-| Form | Formula | Parameter | Small-flood behaviour |
-|---|---|---|---|
-| `"power"` (default) | `peak = rp_max · s^γ` | `perception_severity_exponent` γ = 0.5 | Infinite slope at s = 0: even small floods spike perception strongly |
-| `"saturating_exp"` | `peak = rp_max · (1 − e^(−k·s)) / (1 − e^(−k))` | `perception_severity_rate` k = 3.0 | Finite slope at s = 0: small floods produce proportionally small spikes |
-| `"threshold_linear"` | `peak = rp_max · clip((s − s0)/(1 − s0), 0, 1)` | `perception_severity_threshold` s0 = 0.1 | Zero response below the damage threshold s0 |
+$$P_i = \mathrm{rp}_{\max}\, s_i^{\,\gamma}, \qquad
+s_i = \min\!\left(\frac{\text{realised damage}_i}{\text{max. potential damage}_i},\; 1\right),
+\qquad \gamma > 0.$$
 
-All three are **one-parameter families** (identifiable from small survey
-samples), monotone in severity, and agree at `s = 1`: a total loss always
-reproduces the full legacy spike. With `perception_mode="binary"` (the native
-behaviour, also the γ→0 limit of the power law) they span four qualitatively
-distinct hypotheses about how flood experience scales with flood magnitude.
+The response is monotone in $s$ and pinned at both ends for every $\gamma$:
+$s = 0$ gives no spike, $s = 1$ gives the full $\mathrm{rp}_{\max}$ spike, so a
+total loss always reproduces the legacy peak. **γ is the only shape parameter
+in the perception block, and it spans the whole hypothesis range.**
 
-**Why the concave power law is the preferred default.** The perception model is
-built on the availability heuristic, which is exactly why native DYNAMO-M is
-binary. A concave response preserves that insight while restoring magnitude
-information: at γ = 0.5 a flood damaging 25 % of the home already triggers about
-71 % of the maximum spike, whereas linear scaling (γ = 1) would underweight
-moderate floods (5 % damage giving only 5 % of the spike). The power form also
-*nests* both extremes, so one parameter spans the hypothesis range.
+![Severity response: the γ family, and the two retired forms against their γ equivalents](images/perception_severity_gamma.png)
 
-**Why these two alternatives.** They bracket the power law from opposite sides
-on the one property the forms disagree about: the response to *small* floods.
-`saturating_exp` is equally concave but has finite slope at zero severity, the
-hypothesis that a trivial flood produces a proportionally trivial response.
-`threshold_linear` is the qualitatively opposite (near-miss) hypothesis: no
-response below a damage threshold, then linear. A logistic form was considered
-and rejected: a defensible logistic needs two free parameters, which breaks the
-one-parameter identifiability argument.
+### What each region of γ means
+
+| Region | Shape | Hypothesis | Behaviour at s = 0.10 | Behaviour at s = 0.25 |
+|---|---|---|---|---|
+| γ → 0⁺ | step-like | Approaches binary/native: any flood is a full spike | 63 % of peak (γ=0.2) | 76 % (γ=0.2) |
+| γ = 0.5 **(default)** | concave | Availability heuristic: small floods already register strongly | 32 % | 50 % |
+| γ = 1 | linear | Damage-proportional response | 10 % | 25 % |
+| γ > 1 | convex | Near-miss: small floods are largely ignored | 1 % (γ=2) | 6 % (γ=2) |
+
+`γ = 0` exactly is **rejected** with a `ValueError`, not silently accepted:
+`0.0 ** 0.0 == 1.0` in NumPy, so it would spike *every* agent to the full peak
+including agents that have never flooded. Use `perception_mode="binary"` for the
+exact native response; small positive γ approaches it continuously.
+
+**Why the concave default.** The perception model is built on the availability
+heuristic, which is exactly why native DYNAMO-M is binary. A concave response
+preserves that insight while restoring magnitude information: at γ = 0.5 a flood
+damaging 25 % of the home already triggers 50 % of the maximum spike and one
+damaging 50 % triggers about 71 %, whereas linear scaling would underweight
+moderate floods at both points.
+
+> **Correction, 2026-08-07.** Earlier revisions of this section, of the
+> `DecisionConfig` docstring and of the review response stated that 25 % damage
+> gives "about 71 %" of the spike. That was wrong: `0.25^0.5 = 0.50`. The 71 %
+> figure belongs to 50 % damage. The code was always right (pinned by
+> `test_severity_scales_peak_with_power_law`); only the prose was wrong.
+
+### Why there is only one form
+
+Two alternative forms shipped between 2026-07 and 2026-08 and were **removed
+after measurement**: `saturating_exp`, concave with finite slope at zero,
+
+$$P_i = \mathrm{rp}_{\max}\,\frac{1 - e^{-k s_i}}{1 - e^{-k}},$$
+
+and `threshold_linear`, a hard deadband below $s_0$,
+
+$$P_i = \mathrm{rp}_{\max}\,
+\operatorname{clip}\!\left(\frac{s_i - s_0}{1 - s_0},\, 0,\, 1\right).$$
+
+They were introduced to bracket the power law on the small-flood response, on
+the assumption that they represented distinct hypotheses.
+
+They do not. Sweeping γ traces a curve in outcome space, and both alternatives
+land **on** that curve rather than outside it, at every parameter setting tested:
+
+| Retired configuration | Equivalent γ, synthetic table | Equivalent γ, real Charleston table |
+|---|---|---|
+| `saturating_exp` k = 1 | ≈ 0.79 | not run |
+| `saturating_exp` k = 3 (its default) | ≈ 0.53 | **0.48** |
+| `saturating_exp` k = 6 | ≈ 0.34 | not run |
+| `threshold_linear` s0 = 0.05 | ≈ 1.15 | not run |
+| `threshold_linear` s0 = 0.1 (its default) | ≈ 1.35 | **1.25** |
+| `threshold_linear` s0 = 0.2 | ≈ 1.80 | not run |
+
+The synthetic column is interpolated from a 5-point γ grid and the Charleston
+column from a 10-point grid, so read the synthetic figures as approximate; the
+two agree to about 0.1 in γ.
+
+![Measured outcomes against γ on the real Charleston table, with the retired forms at their equivalent γ](images/perception_gamma_outcomes.png)
+
+The equivalences reproduce across two tables that differ by three orders of
+magnitude in adoption level (70–93 % synthetic against 1.9–5.5 % Charleston),
+which is why this reads as structural rather than as a coincidence of one
+fixture.
+
+**The quantitative test, and why it is not circular.** Each retired form is
+placed at the γ its *adoption* implies, so the adoption panel is fitted by
+construction and proves nothing on its own. Cumulative damage is then the
+independent check, because it took no part in placing the marker. Predicting
+damage from the power curve at that γ leaves:
+
+| Retired configuration | Fitted γ | Damage predicted | Damage measured | Residual |
+|---|---|---|---|---|
+| `saturating_exp` k = 3 | 0.485 | 2,842.0 M\$ | 2,862.1 M\$ | 20.1 M\$ = **1.5 %** of the sweep spread |
+| `threshold_linear` s0 = 0.1 | 1.249 | 3,345.4 M\$ | 3,346.2 M\$ | 0.8 M\$ = **0.1 %** of the sweep spread |
+
+against a 1,326 M$ spread across the γ range. **At most 1.5 % of a retired
+form's effect is form-specific; the rest is reproducible by moving γ**, and
+that residual is far below the uncertainty in γ itself, which is not calibrated
+for Charleston at all.
+
+The reason is structural, and is why the result should generalise: all three are
+monotone maps of `[0, 1]` onto `[0, 1]` pinned at both endpoints, and γ already
+sweeps that space from step-like through linear to strongly convex. There is no
+room left for a second form to occupy. Note that the *curves* differ pointwise
+(panel b of the first figure shows exactly how); it is the *model outcomes* that
+coincide.
+
+Both retired names raise a directed `ValueError` naming their equivalent γ rather
+than an "unknown mode" error, so an old config migrates in one edit.
+
+**What this bought.** The perception block went from four parameters
+(`perception_severity_form`, `_exponent`, `_rate`, `_threshold`) to two
+(`perception_severity_form`, pinned to `"power"`, and `_exponent`). Sensitivity
+analysis is a one-dimensional sweep over γ that can be plotted on one axis;
+comparing non-nested forms would instead need model-selection machinery (AIC/BIC
+or Bayes factors) that a survey of a few hundred households cannot support.
+
+**The deadband hypothesis keeps its own home.** `flood_significance_threshold`
+decides whether a flood registers *at all* (timer reset and spike), which is the
+mechanistically honest deadband, and it is pinned by
+`tests/test_perception.py::test_significance_threshold_creates_deadband`. It is
+*not* a substitute for γ, and this was measured too: raising it from 0.01 to 0.20
+at γ = 1 moves final adoption only from 79.25 % to 78.75 % on the synthetic
+table, because it changes *whether* a flood is remembered rather than *how
+strongly*. Keep the threshold for the registration question and let γ carry the
+response shape.
+
+**A logistic form was considered and rejected** on the original one-parameter
+identifiability argument: a defensible logistic needs two free parameters.
 
 **Recommended analysis order** (survey design in the method guide):
 
-1. Run the default power form with a **sensitivity sweep over γ**
-   (0.25 / 0.5 / 1.0). If outcomes are insensitive, the functional form does not
-   matter for the question at hand and no data collection is needed.
-2. If sensitive, run `saturating_exp`: comparing it against power isolates
-   whether the small-flood response drives the results.
-3. Run `threshold_linear` last: it is the cheapest hypothesis to confirm or
-   reject with survey data, because it predicts a flat segment.
+1. Sweep γ over `0.25 / 0.5 / 1.0 / 2.0`. If outcomes are insensitive, the
+   response shape does not matter for the question at hand and no data
+   collection is needed.
+2. If sensitive, the sweep already tells you *which region* matters, so a survey
+   can be designed to discriminate within it rather than between functional
+   forms. γ is what the survey estimates.
 4. When survey data arrives, fit all three by least squares (stated risk
    perception against experienced damage fraction) and keep the best fit.
 
@@ -685,51 +806,70 @@ and conflating them is a modelling error:
 | **Ex-post realised damage** | Physical: what actually hits the agent | Only the occurrences drawn this year | During the year loop |
 | **Ex-ante expected utility** | Cognitive: how the agent perceives future risk | **All** events in the distribution | At the decision moment |
 
-**Utility (CRRA).**
+**Utility (CRRA).** Consumption-equivalent value $c$ is mapped to utility with
+constant relative risk aversion $\sigma$:
 
-```
-U(c) = c^(1-σ) / (1-σ)   if σ ≠ 1
-U(c) = ln(c)             if σ = 1
-```
+$$U(c) =
+\begin{cases}
+\dfrac{c^{1-\sigma}}{1-\sigma} & \sigma \neq 1,\\[2ex]
+\ln c & \sigma = 1.
+\end{cases}$$
 
-**Net present value for flood event i.**
+**Net present value under flood event $e$.** With wealth $W$, income $Y$,
+amenity value $A$ (`amenity_premium` $\cdot\, W\, \cdot$ `amenity_weight`),
+event damage $D_e$, horizon $T$ and discount rate $r$:
 
-```
-NPV_i = (W + Y + A − D_i) · (1 + Σ_{t=1..T-1} 1/(1+r)^t)
-```
+$$\mathrm{NPV}_e = \left(W + Y + A - D_e\right)
+\left(1 + \sum_{t=1}^{T-1} \frac{1}{(1+r)^t}\right).$$
 
-with `W` wealth, `Y` income, `A` amenity
-(`amenity_premium × wealth × amenity_weight`), `D_i` the expected damage of
-event i, `T` the horizon and `r` the discount rate.
+**Perceived probability.** Each event's exceedance probability is scaled by the
+household's risk perception and capped:
 
-**Perceived probability.** `p_perceived_i = p_actual_i × risk_perception`,
-capped at 0.998.
+$$\tilde{p}_e = \min\!\left(p_e \cdot \mathrm{rp}_i,\; 0.998\right).$$
 
-**Expected utility.** `EU = ∫₀¹ U(NPV(p)) dp`, evaluated with the trapezoidal
-rule over the exceedance curve, with two no-flood rows appended at high `p`.
+**Expected utility.** The expectation integrates utility over the whole
+perceived exceedance curve:
 
-**Do nothing** (`calcEU_do_nothing`):
+$$\mathrm{EU} = \int_0^1 U\!\big(\mathrm{NPV}(p)\big)\, dp,$$
 
-```
-D_i = expected_damages_no_adapt[i]
-EU_do_nothing = ∫₀¹ U(NPV(p)) dp
-If already adapted: EU_do_nothing = -inf     (prevents un-adapting)
-```
+evaluated with the trapezoidal rule over the discrete curve
+(`_integrate_expected_utility`). The grid is built as follows: the events are
+sorted by ascending perceived probability $\tilde{p}_1 < \dots < \tilde{p}_n$
+(so the rarest, most damaging scenario comes first); a lower-bound row at
+$p = 0$ repeats the rarest scenario's NPV; and two no-flood rows are appended
+above $\tilde{p}_n$ (a transition band of width 0.001, then $p = 1$) so the
+remaining probability mass carries the undamaged NPV. Over that grid,
 
-**Dry floodproofing** (`calcEU_adapt`):
+$$\mathrm{EU} \approx \sum_{j}
+\frac{U\!\big(\mathrm{NPV}_{j+1}\big) + U\!\big(\mathrm{NPV}_{j}\big)}{2}\,
+\big(p_{j+1} - p_{j}\big).$$
 
-```
-D_i = expected_damages_adapted[i]          (the floodproof_all_0 strategy)
-annual_cost = total_cost × [r_loan(1+r_loan)^L / ((1+r_loan)^L − 1)]
-cost = Σ_{t=0}^{min(loan_left, T)} annual_cost / (1+r)^t,  loan_left = L − time_adapted
-NPV_adapt_i = NPV_i − cost
-Affordability (inside the function):
-    if income × expenditure_cap <= adaptation_costs  then  EU_adapt = -inf
-NPV is floored at 1 before U() is applied.
-```
+**Do nothing** (`calcEU_do_nothing`). $D_e$ comes from the no-measures damage
+matrix, and the integral above gives $\mathrm{EU}_{\text{do nothing}}$. For an
+already-adapted household $\mathrm{EU}_{\text{do nothing}} = -\infty$, which
+prevents un-adapting.
 
-**The NPV floor.** Both native and port apply `NPV = max(1, NPV)`, because the
-utility function is undefined at zero or negative values. Native prints a
+**Dry floodproofing** (`calcEU_adapt`). $D_e$ comes from the floodproofed
+damage matrix (`floodproof_all_0`). The one-off cost $C$ is financed as a loan
+of duration $L$ at rate $r_L$ and annuitised:
+
+$$\text{annual cost} = C \cdot
+\frac{r_L\,(1+r_L)^{L}}{(1+r_L)^{L} - 1},$$
+
+and the household counts the discounted remaining payments inside its horizon,
+with $\ell = L - \text{time adapted}$ years left on the loan:
+
+$$\text{cost} = \sum_{t=0}^{\min(\ell,\,T)}
+\frac{\text{annual cost}}{(1+r)^t},
+\qquad \mathrm{NPV}^{\text{adapt}}_e = \mathrm{NPV}_e - \text{cost}.$$
+
+Affordability is enforced inside the function: if
+$Y \cdot \text{expenditure cap} \leq \text{annual cost}$, then
+$\mathrm{EU}_{\text{adapt}} = -\infty$.
+
+**The NPV floor.** Both native and port apply
+$\mathrm{NPV} \leftarrow \max(1, \mathrm{NPV})$ before $U$ is applied, because
+the utility function is undefined at zero or negative values. Native prints a
 per-call diagnostic counting the floored entries; see Appendix B.
 
 **Decision.**
@@ -744,19 +884,127 @@ With insurance enabled the comparison becomes three-way over `EU_do_nothing`,
 `EU_adapt` and `EU_insure`, restricted to non-adapted agents (Appendix B,
 deviation 4).
 
-### 9.7 Submodel: insurance pricing
+### 9.7 Submodel: insurance pricing — two rating rules for insurance policy
 
 `insurance_pricing` selects the insurer's rating rule:
 
 | Mode | Premium | Meaning |
 |---|---|---|
-| `"community"` (default) | mean expected annual damage of the pool, one flat rate for everybody | Native DYNAMO-M's rule. Low-risk households cross-subsidise high-risk ones. Mirrors community-rated schemes such as the pre-2021 US NFIP |
-| `"risk_based"` | `(1 − deductible) × EAD_i` per household | The actuarially fair price: it exactly covers the insurer's expected payments for that household. No cross-subsidy. Mirrors the direction of NFIP Risk Rating 2.0 |
+| `"community"` (default) | mean expected annual damage of the pool, one flat rate for everybody | Native DYNAMO-M's rule. Low-risk households cross-subsidise high-risk ones. Mirrors community-rated schemes such as the pre-2021 US NFIP (Michel-Kerjan 2010) |
+| `"risk_based"` | $\pi_i = (1-d)\,\mathrm{EAD}_i$ per household | The actuarially fair price: it exactly covers the insurer's expected payments for that household. No cross-subsidy. Mirrors the direction of NFIP Risk Rating 2.0 (FEMA 2021; GAO 2023) |
 
-`insurance_loading` is the insurer's margin (1.0 = at cost) and
-`insurance_subsidy` the publicly paid share. Both are beyond native; Appendix B
-row 6b explains why they exist. Insurance is annual, re-decided every year, and
-never overrides physical floodproofing.
+Insurance is annual, re-decided every year, and never overrides physical
+floodproofing.
+
+**The symbols, mapped to the model.** Every quantity in this submodel is either a
+config field or derived from the lookup table:
+
+| Symbol | Meaning | In this model | Default | How to set |
+|---|---|---|---|---|
+| $\mathrm{EAD}_i$ | Expected annual damage of household $i$: its average yearly flood loss at the current sea level | $\sum_e f_e\, D_{i,e}$ over the no-measures slice of the lookup table, recomputed each year at the current SLR (`_compute_premium_offer`, `simulation_engine.py`) | derived | Nothing to set; it is the hazard model's output |
+| $d$ | Deductible: the share of each loss the insured household still pays itself | `insurance_deductible` | 0.1 (native DYNAMO-M's hard-coded value) | From the policy terms of the scheme being modelled (e.g. NFIP deductible options) |
+| $\pi_i$ | The actuarial base premium | risk-based: $(1-d)\,\mathrm{EAD}_i$ per household; community: one flat value, the pool mean of that quantity | mode via `insurance_pricing`, default `"community"` | A scenario choice, not a calibration target: pick the rating rule of the scheme under study |
+| $\lambda$ | Loading: what the insurer adds on top of the expected-loss price | `insurance_loading`, multiplies the base premium | 1.0 (at cost) | From loss ratios; see below |
+| $\sigma_s$ | Subsidy: the share of the household's bill paid by a public scheme | `insurance_subsidy` | 0.0 (no intervention; the native-parity baseline) | A policy lever to sweep, not calibrate; see below |
+
+The offer the household actually faces is
+
+$$\pi_i^{\text{offer}} = \lambda\,(1-\sigma_s)\,\pi_i,$$
+
+and the affordability gate then tests $\pi_i^{\text{offer}}$ against six percent of
+income (`expenditure_cap`), setting $\mathrm{EU}_{\text{insure}} = -\infty$ when it
+fails.
+
+**Why both rules ship.** The two modes are the two poles of the real policy debate,
+and the trade-off between them follows from the premium formula itself:
+
+1. *Risk-based rating creates a price signal.* Because $\pi_i$ is household $i$'s
+   own expected payout, anything that lowers its expected damage lowers its premium,
+   so risk reduction becomes privately profitable — the incentive argument for
+   risk-based pricing (Hudson et al. 2016; Kousky 2019). Community rating severs
+   this link: everyone pays the pool mean, so floodproofing does not change your
+   bill. The signal is muted and the low-risk majority is overcharged relative to
+   its own risk, a selection problem measured by Wagner (2022): under 60 % of
+   high-risk-zone US homeowners buy flood insurance even at premiums around
+   two-thirds of actuarial cost, and selection runs on observable adaptation. (One
+   honest model caveat: the ported insurer prices on the no-measures damage matrix,
+   so *within* a run a household's premium does not fall when it floodproofs — the
+   signal argument applies across scenarios. This is the deliberate
+   no-feedback-loop simplification of Appendix B row 6.)
+2. *The same formula creates the affordability failure.* $\pi_i$ scales
+   one-for-one with $\mathrm{EAD}_i$; flood risk is concentrated in specific places
+   and correlated with lower incomes; so the premium-to-income ratio is largest
+   exactly where cover matters most. In this model that arrives through one
+   concrete gate: $\pi_i^{\text{offer}} > 0.06 \cdot \text{income}_i$ excludes the
+   household. The notebook's risk-based run shows the result: the median premium
+   collapses to about \$122/yr and 83 % of households can afford cover, but only
+   4.5 % of the highest-risk decile can. Hudson et al. (2016) measure the same
+   failure empirically (about 20 % of at-risk households in France and Germany
+   cannot afford risk-based premiums), and Gourevitch, Snyder and Kousky (2025)
+   measure it after the NFIP's move to risk-based rates: 11–39 % fewer new
+   policies and 5–13 % fewer renewals, with declines up to 60 % in lower-income
+   zip codes. This is a problem a policy design has to address, and the next point
+   is the model's lever for it.
+3. *The remedy the literature recommends is a subsidy that sits outside the premium
+   formula — which is exactly what `insurance_subsidy` is.* The recommended design
+   is to keep charging the risk-based price, so the signal survives, and pay part
+   of the household's *bill* from public money rather than from other
+   policyholders' premiums: means-tested vouchers coupled to mitigation loans
+   (Kousky & Kunreuther 2014), vouchers costing less than the risk reduction they
+   enable (Hudson et al. 2016), and the same design recommended alongside Risk
+   Rating 2.0 (Zhang, Lin & Kunreuther 2023; Gourevitch, Snyder & Kousky 2025). In
+   the implementation this is literally the order of operations in
+   `_compute_premium_offer`: the actuarial $\pi_i$ is computed first from
+   $\mathrm{EAD}_i$, and $\sigma_s$ only discounts what the household is asked to
+   pay. High-risk households still face premiums proportional to their risk, but
+   the affordability gate now tests $\lambda(1-\sigma_s)\pi_i$ against income, so
+   raising $\sigma_s$ relaxes the constraint that point 2 imposes. Sweeping
+   $\sigma_s$ is how a modeller studies voucher-style policy with this package.
+
+   **How much it relaxes depends on how skewed the pool is, and on the real
+   Charleston table a uniform subsidy is much weaker than it sounds.** On the
+   package's synthetic demonstration table
+   (`examples_engine/08_income_perception_insurance.py`) a 90 % subsidy lifts
+   uptake from 0 % to a 48.8 % peak. On the real table it does far less, because
+   the subsidy scales the premium while the affordability gate is absolute. A
+   top-decile household with $\mathrm{EAD}_i \approx 52{,}000$ pays about
+   46,000 under fair pricing; a 60 % subsidy still leaves 18,600 against a 6 %
+   budget of roughly 4,200, so it stays excluded. Measured on the real table, a
+   60 % subsidy moves risk-based uptake not at all (0.000 % either way), while
+   the same subsidy on the flat community rate lifts peak uptake from 0.98 % to
+   3.06 % and *reduces* floodproofing from 4.65 % to 4.06 %. A uniform subsidy
+   therefore helps the households that least need cover, and can crowd out
+   physical adaptation. This is precisely why the literature specifies
+   **means-tested** support sized to each household's affordability gap (Kousky
+   & Kunreuther 2014; Hudson et al. 2016) rather than a uniform discount.
+   `insurance_subsidy` implements the uniform version; a per-household
+   $\sigma_{s,i}$ is the natural extension at the same seam.
+
+**Setting the loading.** $\lambda = 1$ prices "at cost": over many years the insurer
+collects exactly what it pays out, with nothing left for running the company. A real
+insurer also pays staff and administration, buys reinsurance, and holds capital for
+the bad years, and prices all of that into the premium; the loading is that
+addition. It connects to a published statistic, the **loss ratio**: claims paid
+divided by premiums collected. An insurer paying out about 75 cents of claims per
+premium dollar (loss ratio 0.75) charges about $1/0.75 \approx 1.3$ times expected
+claims, so $\lambda \approx 1/\text{loss ratio}$ of the scheme being modelled.
+Disaster lines sit above ordinary property lines here, because correlated
+catastrophe losses force insurers to hold expensive capital (Kousky 2019).
+
+**Setting the subsidy.** The default is 0 because the unsubsidised market is the
+honest baseline: it is native DYNAMO-M's behaviour (parity), and any positive value
+is a policy intervention that should be a deliberate scenario choice. For a
+defensible illustration value, the NFIP itself ran an implicit subsidy for decades:
+GAO found pre-FIRM subsidised policies paid on average only 35–40 % of the
+full-risk rate, an implicit $\sigma_s \approx 0.60$–$0.65$ (GAO 2013; the menu of
+explicit affordability designs is in Horn 2023). A US-anchored sweep is therefore
+$\sigma_s \in \{0, 0.3, 0.6, 0.9\}$: 0.6 mirrors the NFIP's historical implicit
+subsidy, and the notebook's 0.9 is deliberately deeper, chosen to reveal when the
+high-risk tail finally comes under cover. One stated simplification:
+`insurance_subsidy` is a flat share of every bill, whereas the voucher literature
+sizes support to each household's affordability gap (Hudson et al. 2016; Kousky &
+Kunreuther 2014) — a means-tested $\sigma_{s,i}$ would be a straightforward
+extension at the same seam.
 
 ### 9.8 Submodel: adaptation lifespan
 
@@ -839,8 +1087,8 @@ which also sets out a tiered, open-data-first plan.
 | `risk_perception` | dynamic | 0.01–2.01 | – | Subjective probability multiplier |
 | `flood_timer` | dynamic | 99 at init | yr | Years since the last flood |
 
-Behavioural parameters added by this project (severity forms, insurance pricing
-knobs, income synthesis) are inventoried in the method guide.
+Behavioural parameters added by this project (the severity exponent γ, insurance
+pricing knobs, income synthesis) are inventoried in the method guide.
 
 ---
 
@@ -863,6 +1111,11 @@ knobs, income synthesis) are inventoried in the method guide.
 | **Lookup table (LUT)** | The precomputed `.nc` impact table joining stage 1 to stage 2 |
 | **Household** | One residential building, one `object_id`, one agent |
 | **Actuarially fair** | Priced exactly at expected cost, with no margin |
+| **Cross-subsidy** | One group's premium covering another's risk: under community rating, low-risk households pay above their own risk so high-risk households can pay below theirs |
+| **Cross-subsidised tail** | The high-risk households that benefit from that transfer. Under community rating everyone pays the pool's *mean* EAD, so a household whose own EAD exceeds the mean buys cover below its own risk. On the real Charleston table the top EAD decile pays about 0.24 times its own risk. In the model runs this is the only group for which insuring beats the alternatives, and therefore the only source of non-zero uptake (§9.7) |
+| **Expenditure cap** | The hard budget rule `expenditure_cap = 0.06`: if an option costs more than 6 % of annual income, its expected utility is set to `-inf` and it leaves the choice set entirely. Applies to both floodproofing and insurance |
+| **Loading** | What an insurer adds on top of the expected-loss price for expenses, reinsurance and capital; `insurance_loading`, estimated as 1 / loss ratio |
+| **Loss ratio** | Claims paid divided by premiums collected; the published statistic a loading is derived from |
 | **Bit-parity gate** | A test asserting two code paths produce *byte-identical* arrays, not merely close ones; used to prove the drivers are wrappers around one kernel |
 | **Golden wall** *(retired 2026-08)* | The former bit-exact legacy regression: `tests/test_legacy_mode.py` compared runs under `CouplingConfig.legacy()` against arrays stored in `tests/data/golden_legacy_mock.npz`, captured from the pre-refactor kernels. The rule was "if it fails, fix the leak, never re-capture the file". Retired with the legacy-reproduction layer (§11); the term survives in the git history and in `docs/progress/` |
 
@@ -875,12 +1128,12 @@ following are the **deliberate** deviations, each with its rationale.
 | # | Deviation | Native behaviour | Rationale |
 |---|---|---|---|
 | 1 | **Multi-event Poisson hazard draw** | One draw per node per year against descending return periods; at most 1 event/yr (`flood_risk.py:599-622`) | The lookup table carries a probabilistic event *set* with occurrence rates, not a fixed return-period ladder; Poisson is the exact model for rates |
-| 2 | **Severity-scaled risk perception** (`perception_mode="severity"`, three one-parameter forms, default concave power law γ=0.5) | Binary: any positive depth triggers the full spike (`flood_risk.py:619`) | A nuisance flood and a catastrophe should not look identical to the agent; γ→0 recovers the native response (§9.4) |
+| 2 | **Severity-scaled risk perception** (`perception_mode="severity"`, one power-law form, default γ=0.5) | Binary: any positive depth triggers the full spike (`flood_risk.py:619`) | A nuisance flood and a catastrophe should not look identical to the agent; γ→0 approaches the native response (§9.4) |
 | 3 | **Exceedance conversion** `p = 1 − e^(−freq)` for the SEU integral | `p = 1/rt` are already exceedance probabilities ≤ 0.5 | The table stores rates that may exceed 1; the conversion restores valid exceedance semantics |
 | 4 | **Insurance never overrides floodproofing** (`decide()` masks adapted agents) | An adapted agent may flip to insured, silently discarding its floodproofing (`coastal_nodes.py:1938-1952`) | Physical measures should persist until the lifespan reset; avoids un-modelled capital destruction |
 | 5 | **Realised-damage bookkeeping** (`damage_history`, `out_of_pocket_history`) | No realised-damage accounting; wealth is never decremented by floods | Damage time series are a core output here |
 | 6 | **Premium at current-SLR EAD, residential-only, always no-measures** | Premium = node `ead_total / n`, where `ead_total` **includes commercial and industrial** damage, is FPS-truncated, and is adaptation-aware (`flood_risk.py:528-554`, `insurer_agent.py:20-26`) | The lookup table is the hazard source; `Σ freq·dmg` is the exact EAD under Poisson semantics; households are the agents, so only residential exposure is pooled; the no-measures matrix keeps the premium independent of uptake, avoiding a feedback loop |
-| 6b | **Pricing knobs beyond native**: `insurance_pricing="risk_based"`, `insurance_loading`, `insurance_subsidy` | Native has exactly one rule: the flat community premium | Community rating is native's rule, mirroring real community-rated schemes such as the pre-2021 US NFIP; risk-based is the standard actuarial benchmark (premium = expected loss, cf. NFIP Risk Rating 2.0). Added (1) as a diagnostic, to test whether the flat rate is what suppresses uptake (it is not; the expenditure cap is), and (2) to span the premium designs a public insurer could realistically set |
+| 6b | **Pricing knobs beyond native**: `insurance_pricing="risk_based"`, `insurance_loading`, `insurance_subsidy` | Native has exactly one rule: the flat community premium | Community rating is native's rule, mirroring real community-rated schemes such as the pre-2021 US NFIP (Michel-Kerjan 2010); risk-based is the standard actuarial benchmark (premium = expected loss, cf. NFIP Risk Rating 2.0; FEMA 2021). Added (1) as a diagnostic, to test whether the flat rate is what suppresses uptake (it is not; the expenditure cap is — the trade-off measured by Hudson et al. 2016 and, post-reform, by Gourevitch, Snyder & Kousky 2025), and (2) to span the premium designs a public insurer could realistically set (Kousky & Kunreuther 2014). Full argument: §9.7 |
 | 7 | **Parameterised income synthesis** (`median_income`, `mean_median_inc_ratio`) | GDL raster + World Bank table + UN WIID per region | Those datasets are not shipped here; the pipeline (lognormal to percentile to wealth ratio) is ported unchanged, and real percentiles can be supplied per agent |
 | 8 | **Damages evolve with SLR inside the horizon integration inputs** | Native NPV holds damages constant over the horizon (myopic) | Inherited coupling behaviour; revisit with calibration |
 
@@ -930,7 +1183,7 @@ drift from the implementation:
 - `examples_engine/02_seu_rule.py` shows the SEU comparison for a small
   population, printing `EU_do_nothing`, `EU_adapt` and the resulting decision.
 - `examples_engine/08_income_perception_insurance.py` walks the income
-  percentiles, the three severity forms, Poisson rate recovery, and the
+  percentiles, the severity-exponent sweep, Poisson rate recovery, and the
   insurance pricing modes side by side.
 - `notebooks/2_run_coupled_abm.ipynb` runs the full scenario set on the real
   Charleston table, including the legacy comparison and the insurance
@@ -939,9 +1192,8 @@ drift from the implementation:
 For the single-event case the trapezoidal integral collapses to a closed form
 useful for hand checks:
 
-```
-EU = (p + 0.0005) · U(NPV_flood) + (1 − p − 0.0005) · U(NPV_no_flood)
-```
+$$\mathrm{EU} = (p + 0.0005)\, U\!\big(\mathrm{NPV}_{\text{flood}}\big)
++ (1 - p - 0.0005)\, U\!\big(\mathrm{NPV}_{\text{no flood}}\big),$$
 
 where 0.0005 is half the 0.001 transition band inserted between the flood and
 no-flood rows of the exceedance curve.
@@ -957,11 +1209,61 @@ no-flood rows of the exceedance curve.
 
 # References
 
-Tierolf, L., de Moel, H., Botzen, W. J. W., et al. (2023). *A coupled
-agent-based model for France for simulating adaptation and migration decisions
-under future coastal flood risk.* Scientific Reports 13, 4176.
+Model lineage and protocol:
+
+Tierolf, L., Haer, T., Botzen, W. J. W., de Bruijn, J. A., Ton, M. J.,
+Reimann, L., & Aerts, J. C. J. H. (2023). *A coupled agent-based model for
+France for simulating adaptation and migration decisions under future coastal
+flood risk.* Scientific Reports 13, 4176.
 
 Grimm, V., Railsback, S. F., Vincenot, C. E., et al. (2020). *The ODD protocol
 for describing agent-based and other simulation models: a second update to
 improve clarity, replication, and structural realism.* Journal of Artificial
 Societies and Social Simulation 23(2), 7.
+
+Insurance pricing, affordability and subsidies (§9.7, Appendix B row 6b):
+
+Gourevitch, J. D., Snyder, M., & Kousky, C. (2025). *Effects of risk-based
+pricing reform on flood insurance uptake.* Journal of Catastrophe Risk and
+Resilience 3, article 7.
+
+Hudson, P., Botzen, W. J. W., Feyen, L., & Aerts, J. C. J. H. (2016).
+*Incentivising flood risk adaptation through risk based insurance premiums:
+trade-offs between affordability and risk reduction.* Ecological Economics
+125, 1–13.
+
+Hudson, P., Botzen, W. J. W., & Aerts, J. C. J. H. (2019). *Flood insurance
+arrangements in the European Union for future flood risk under climate and
+socioeconomic change.* Global Environmental Change 58, 101966.
+
+Kousky, C. (2019). *The role of natural disaster insurance in recovery and
+risk reduction.* Annual Review of Resource Economics 11.
+
+Kousky, C., & Kunreuther, H. (2014). *Addressing affordability in the National
+Flood Insurance Program.* Journal of Extreme Events 1(1), 1450001.
+
+Michel-Kerjan, E. O. (2010). *Catastrophe economics: the National Flood
+Insurance Program.* Journal of Economic Perspectives 24(4), 165–186.
+
+Wagner, K. R. H. (2022). *Adaptation and adverse selection in markets for
+natural disaster insurance.* American Economic Journal: Economic Policy 14(3),
+380–421.
+
+Zhang, F., Lin, N., & Kunreuther, H. (2023). *Benefits of and strategies to
+update premium rates in the US National Flood Insurance Program under climate
+change.* Risk Analysis 43, 1627–1640.
+
+Government and programme reports:
+
+FEMA (2021). *Risk Rating 2.0: Equity in Action* (methodology). Federal
+Emergency Management Agency.
+
+GAO (2013). *Flood Insurance: More Information Needed on Subsidized
+Properties.* GAO-13-607. US Government Accountability Office.
+
+GAO (2023). *Flood Insurance: FEMA's New Rate-Setting Methodology Improves
+Actuarial Soundness but Highlights Need for Broader Program Reform.*
+GAO-23-105977. US Government Accountability Office.
+
+Horn, D. P. (2023). *Options for Making the National Flood Insurance Program
+More Affordable.* CRS Report R47000. Congressional Research Service.

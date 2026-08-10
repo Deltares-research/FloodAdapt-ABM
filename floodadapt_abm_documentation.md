@@ -197,10 +197,8 @@ DYNAMO-M `settings.yml`:
 | `seu_prob_mode` | `"exceedance"` | SEU probabilities: `p = 1 − e^(−freq)` / `"raw_freq"` (pre-review) |
 | `perception_mode` | `"severity"` | post-flood spike scales with damage severity / `"binary"` (pre-review & native) |
 | `flood_significance_threshold` | `0.01` | min damage severity to register as flood experience (pre-review `0.0`) |
-| `perception_severity_form` | `"power"` | severity→peak form: `"power"` / `"saturating_exp"` / `"threshold_linear"` (one parameter each; see below) |
-| `perception_severity_exponent` | `0.5` | `"power"`: concave severity exponent γ (γ→0 binary, γ=1 linear) |
-| `perception_severity_rate` | `3.0` | `"saturating_exp"`: rate k > 0 (larger k saturates faster) |
-| `perception_severity_threshold` | `0.1` | `"threshold_linear"`: damage severity s0 in [0, 1) below which no spike occurs |
+| `perception_severity_form` | `"power"` | the only supported value (`"saturating_exp"` / `"threshold_linear"` were removed, see below) |
+| `perception_severity_exponent` | `0.5` | severity exponent γ > 0: γ→0 approaches binary, γ<1 concave, γ=1 linear, γ>1 near-miss. `γ = 0` raises |
 | `income_mode` | `"synthetic_lognormal"` | native income port; the only supported value (`"mpd_ratio"` was removed, see below) |
 | `median_income` | `70000.0` | regional median income for the synthetic distribution (site-specific) |
 | `mean_median_inc_ratio` | `1.15` | lognormal spread (native UN-WIID fallback) |
@@ -220,39 +218,98 @@ adaptation cost were both proportional to `max_pot_dmg`, so the affordability ga
 reduced to one population-wide constant and never bound for any household.
 
 Risk-perception law:
-`risk_perc = peak · 1.6^(risk_perc_coef · flood_timer) + risk_perc_min`,
-where `peak = risk_perc_max` in binary mode and, in severity mode with
-severity `s = realised/max_pot_dmg` clipped to [0, 1]:
 
-- `"power"`: `peak = risk_perc_max · s^γ` (default; total loss = full binary-mode spike),
-- `"saturating_exp"`: `peak = risk_perc_max · (1 − e^(−k·s)) / (1 − e^(−k))`,
-- `"threshold_linear"`: `peak = risk_perc_max · clip((s − s0)/(1 − s0), 0, 1)`.
+$$\mathrm{risk\_perc} = P \cdot 1.6^{\,\text{risk\_perc\_coef} \cdot \text{flood\_timer}} + \mathrm{risk\_perc\_min},$$
 
-All three forms agree at `s = 1` and differ in the small-flood response; the
-rationale, preference order and survey-fitting recipe are in
-`docs/architecture.md` ("Severity-response formulations") and
+where the peak $P = \mathrm{risk\_perc\_max}$ in binary mode and, in severity
+mode,
+
+$$P = \mathrm{risk\_perc\_max} \cdot s^{\gamma}, \qquad
+s = \min\!\left(\frac{\text{realised damage}}{\text{max\_pot\_dmg}},\, 1\right),$$
+
+with $\gamma$ = `perception_severity_exponent` > 0. The severity $s$ is the
+share of the building's maximum potential damage realised in the flood, so
+$s = 0.25$ means the flood destroyed a quarter of what the home could lose.
+
+A total loss always reproduces the full binary-mode spike, whatever γ is.
+γ is the single shape parameter and covers the whole hypothesis range:
+
+| γ | Shape | Reading | s = 0.10 | s = 0.25 |
+|---|---|---|---|---|
+| → 0⁺ | step-like | approaches binary/native | 63 % (γ=0.2) | 76 % (γ=0.2) |
+| 0.5 (default) | concave | availability heuristic | 32 % | 50 % |
+| 1.0 | linear | damage-proportional | 10 % | 25 % |
+| 2.0 | convex | near-miss, small floods discounted | 1 % | 6 % |
+
+`γ = 0` raises a `ValueError` rather than being accepted: `0.0 ** 0.0 == 1.0`
+would spike every agent, including agents that never flooded. Use
+`perception_mode="binary"` for the exact native response.
+
+Calibration status: the default γ = 0.5 is argued from the availability
+heuristic, not fitted to data, and is not calibrated for Charleston. Sweep it
+or fit it from a small survey; both recipes are in
+`docs/calibration_validation_guide.md` (Tier 1 and Tier 3).
+
+**Retired 2026-08: the two alternative severity forms.** `"saturating_exp"`
+($P = \mathrm{rp}_{\max}\,(1 - e^{-k s})/(1 - e^{-k})$) and
+`"threshold_linear"`
+($P = \mathrm{rp}_{\max}\operatorname{clip}((s - s_0)/(1 - s_0), 0, 1)$) were
+removed after
+their model outcomes were measured on both the synthetic and the real Charleston
+table and found to lie *on* the γ curve: `saturating_exp` at k = 3 reproduces
+γ ≈ 0.5, and `threshold_linear` at s0 = 0.1 reproduces γ ≈ 1.3. They were
+reparameterisations of γ, not distinct hypotheses. Passing either now raises a
+directed `ValueError` naming the equivalent γ, so an old config migrates in one
+edit. Rationale, the measured equivalence table and the figures are in
+`docs/architecture.md` ("Severity response"); the survey-fitting recipe is in
 `docs/calibration_validation_guide.md`.
 
 **Insurance pricing modes, in plain language.** `"community"`: every household
 pays the same flat premium, equal to the pool's mean expected annual damage
 (native's rule). Low-risk households cross-subsidise high-risk ones.
 `"risk_based"`: each household pays its own expected payout,
-`(1 − deductible) · EAD_i`. This is the actuarially fair premium (the price
-that exactly covers the insurer's expected payments): no cross-subsidy, cheap
-for low-risk households, expensive for high-risk ones. `insurance_loading`
-multiplies the premium to represent insurer costs and margin (1.0 = at cost).
-`insurance_subsidy` is the fraction of the premium paid by a public scheme
-instead of the household.
+$\pi_i = (1 - d)\,\mathrm{EAD}_i$ with $d$ = `insurance_deductible`. This is
+the actuarially fair premium (the price that exactly covers the insurer's
+expected payments): no cross-subsidy, cheap for low-risk households, expensive
+for high-risk ones. The offer the household actually faces is
+
+$$\pi_i^{\text{offer}} = \lambda\,(1 - \sigma_s)\,\pi_i,$$
+
+with $\lambda$ = `insurance_loading` and $\sigma_s$ = `insurance_subsidy`.
+
+How to set the three knobs:
+
+- `insurance_deductible` ($d$, default 0.1, native's hard-coded value): from
+  the policy terms of the scheme being modelled.
+- `insurance_loading` ($\lambda$, default 1.0 = "at cost"): the loading is
+  what a real insurer adds on top of the expected-loss price to pay staff,
+  reinsurance and capital held for bad years. Set it from the scheme's **loss
+  ratio** (claims paid / premiums collected):
+  $\lambda \approx 1 / \text{loss ratio}$,
+  so paying out 75 cents per premium dollar means $\lambda \approx 1.3$.
+- `insurance_subsidy` ($\sigma_s$, default 0.0): the share of the bill paid
+  publicly. The default is 0 because the unsubsidised market is the baseline
+  (and the native-parity setting); any positive value is a policy scenario.
+  For scale, the pre-reform NFIP's implicit subsidy was about 0.6 (subsidised
+  policies paid 35-40 % of the full-risk rate; GAO-13-607), and the notebook's
+  0.9 is deliberately deeper. Sweep it rather than calibrate it.
 
 Provenance: community rating is native DYNAMO-M's `InsurerAgent` and mirrors
-real community-rated flood schemes (e.g. the US NFIP before its 2021 reform);
-risk-based pricing is the standard actuarial benchmark from insurance
-economics (and the direction of NFIP "Risk Rating 2.0"). The beyond-native
-modes exist (1) as a diagnostic — to test whether the flat community rate is
-what suppresses uptake (it is not; the expenditure cap binds under either
-rule, see notebook §5) — and (2) so that rating rule × loading × subsidy
-spans the premium designs a public insurer or regulator could realistically
-set.
+real community-rated flood schemes (e.g. the US NFIP before its 2021 reform;
+Michel-Kerjan 2010); risk-based pricing is the standard actuarial benchmark
+from insurance economics (and the direction of NFIP "Risk Rating 2.0"; FEMA
+2021). The trade-off between them is real and measured: risk-based premiums
+reward risk reduction but become unaffordable exactly in the high-risk tail
+(Hudson et al. 2016; after the NFIP's reform, Gourevitch, Snyder & Kousky
+2025), which is why the literature pairs them with means-tested,
+outside-the-pool subsidies (Kousky & Kunreuther 2014) — the design
+`insurance_subsidy` implements, since it discounts the household's bill while
+the risk-based price itself stays intact. The beyond-native modes exist (1) as
+a diagnostic — to test whether the flat community rate is what suppresses
+uptake (it is not; the expenditure cap binds under either rule, see notebook
+§5) — and (2) so that rating rule × loading × subsidy spans the premium
+designs a public insurer or regulator could realistically set. Full argument
+and citations: `docs/architecture.md` §9.7 and its References.
 
 ### `CouplingConfig`
 Container: `netcdf: NetCDFMappingConfig`, `decision: DecisionConfig`,
