@@ -6,14 +6,14 @@ Pluggable decision rules for the unified ``SimulationEngine``.
 ``SimulationEngine`` owns *time and data* (NetCDF loading, interpolation,
 stochastic event drawing, state tracking, the year loop); a ``DecisionRule``
 owns *behaviour* (whether each household adapts this year).  Swapping the rule
-is the only change needed to switch between the legacy threshold heuristic and
+is the only change needed to switch between the threshold heuristic and
 the DYNAMO-M SEU science, without touching the engine.
 
 Rules provided, by status
 -------------------------
 Every rule carries a machine-readable ``STATUS`` class attribute saying how it
 is meant to be used.  The preferred path is the live coupling to native
-DYNAMO-M; the others are a parity-gated port, a baseline, and legacy code.
+DYNAMO-M; the others are a parity-gated port and a simple baseline.
 
 ============================  ==============  ==================================
 Rule                          ``STATUS``      Use it for
@@ -27,7 +27,7 @@ Rule                          ``STATUS``      Use it for
                                               preferred rule.  Used when
                                               DYNAMO-M is absent, and required
                                               for ``engine.run(n_jobs>1)``.
-``ThresholdRule``             experiment      Legacy baseline: adapt when this
+``ThresholdRule``             experiment      Baseline: adapt when this
                                               year's damage exceeds
                                               ``damage_threshold *
                                               max_pot_dmg``.  Ignores income,
@@ -83,8 +83,8 @@ STATUS_PREFERRED: str = "preferred"
 #: module does not support.
 STATUS_REFERENCE: str = "reference"
 
-#: Baseline or comparison behaviour, not the coupled science.  Kept so the
-#: pre-coupling model can be reproduced and compared against.
+#: Baseline or comparison behaviour, not the coupled science.  Kept so a
+#: simpler reference arm can be run and compared against.
 STATUS_EXPERIMENT: str = "experiment"
 
 #: Retained only to prove the bit-parity contract; not an application path.
@@ -219,7 +219,7 @@ class DecisionRule(ABC):
 
 class ThresholdRule(DecisionRule):
     """
-    Legacy reactive heuristic (the rule the coupling replaces).
+    Reactive damage-threshold heuristic.
 
     An agent adapts once the realised damage it suffered *this year* exceeds a
     fixed fraction of its maximum potential damage::
@@ -233,8 +233,8 @@ class ThresholdRule(DecisionRule):
     .. note::
        **Status: experiment.**  This is a baseline for comparison, not the
        coupled science.  It reacts *after* damage occurs and ignores income,
-       affordability, risk perception and insurance.  Use it to reproduce the
-       pre-coupling model or as a reference arm; use the preferred rule
+       affordability, risk perception and insurance.  Use it as a reference
+       arm; use the preferred rule
        (:class:`~floodadapt_abm.dynamo_live_rule.DynamoLiveRule`) for
        application runs.
 
@@ -242,7 +242,7 @@ class ThresholdRule(DecisionRule):
     ----------
     config : DecisionConfig
         Used only for interface uniformity; the threshold itself is passed
-        separately (defaults to ``0.30``, the legacy value).
+        separately (defaults to ``0.30``).
     damage_threshold : float
         Fraction of ``max_pot_dmg`` above which an agent adapts.  Default
         ``0.30``.

@@ -2,7 +2,7 @@
 
 **Status**: ⚠️ DEPRECATED — kept for reference and backward compatibility only.
 
-This folder contains the original `DynamoDecisionBridge`-based examples from before the Phase 2+3 refactor. They still work but are **not recommended for new code**.
+This folder contains examples that drive `DynamoDecisionBridge` directly, from before the+3 refactor. They still work but are **not recommended for new code**.
 
 ## Files
 
@@ -32,7 +32,7 @@ See `examples_engine/` for the canonical new examples.
 
 ## Why the Change?
 
-The unified `SimulationEngine` (Phase 2+3 refactor) consolidates:
+The unified `SimulationEngine` consolidates:
 - Time ownership (was external loop)
 - Event drawing (unified Bernoulli + random-pool cap)
 - Per-agent state (standardised `AgentState`)

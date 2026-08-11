@@ -6,12 +6,12 @@ Unit tests for the unified stochastic event generator
 
 Two families of tests:
 
-* **Legacy-branch spec** — the original Bernoulli-clip tests, now pinned
+* **Clipped-draw spec** — the Bernoulli-clip tests, pinned
   explicitly to ``mode="bernoulli_clip"`` / ``cap_policy="random"``.  They
-  define the frozen legacy semantics that ``historical_modes_config()`` and
+  define the frozen clip semantics that ``historical_modes_config()`` and
   the golden regression rely on.
 * **Poisson-mode tests** — the statistically-correct draw, including the
-  rate-recovery regression that fails by construction under the legacy
+  rate-recovery regression that fails by construction under the clipped
   clip+cap behaviour.
 """
 from __future__ import annotations
@@ -25,8 +25,8 @@ from floodadapt_abm.event_utils import draw_year_events, generate_event_sequence
 EVENT_NAMES = np.array([f"RP{rp:04d}" for rp in (2, 5, 10, 25, 50, 100, 500)])
 EVENT_FREQS = 1.0 / np.array([2, 5, 10, 25, 50, 100, 500], dtype=float)
 
-#: kwargs pinning the frozen legacy draw semantics.
-LEGACY = dict(mode="bernoulli_clip", cap_policy="random")
+#: kwargs pinning the frozen clip-and-cap draw semantics.
+CLIP_CAP = dict(mode="bernoulli_clip", cap_policy="random")
 
 
 def test_draw_is_reproducible():
@@ -44,28 +44,28 @@ def test_draw_returns_subset_of_catalogue():
 
 
 def test_cap_limits_event_count():
-    """Legacy: with a certain-occurrence catalogue, the cap binds exactly."""
+    """Clipped draw: with a certain-occurrence catalogue, the cap binds exactly."""
     freqs = np.ones(7)  # every event occurs with prob 1 under bernoulli_clip
     rng = np.random.default_rng(0)
     occ = draw_year_events(
-        EVENT_NAMES, freqs, rng, max_events_per_year=3, **LEGACY
+        EVENT_NAMES, freqs, rng, max_events_per_year=3, **CLIP_CAP
     )
     assert len(occ) == 3
 
 
 def test_no_cap_returns_all_when_certain():
-    """Legacy: freq >= 1 is clipped to certainty."""
+    """Clipped draw: freq >= 1 becomes certainty."""
     freqs = np.ones(7)
     rng = np.random.default_rng(0)
     occ = draw_year_events(
-        EVENT_NAMES, freqs, rng, max_events_per_year=None, **LEGACY
+        EVENT_NAMES, freqs, rng, max_events_per_year=None, **CLIP_CAP
     )
     assert len(occ) == 7
 
 
 def test_cap_selection_is_random_not_frequency_ordered():
     """
-    Legacy cap policy: RANDOM selection from the drawn pool, not 'keep the
+    Uniform cap policy: RANDOM selection from the drawn pool, not 'keep the
     most frequent'.  Over many draws with all-certain events and cap=1, many
     distinct event indices should be retained (a frequency-ordered policy
     would only ever keep the first).
@@ -75,7 +75,7 @@ def test_cap_selection_is_random_not_frequency_ordered():
     for s in range(200):
         occ = draw_year_events(
             EVENT_NAMES, freqs, np.random.default_rng(s),
-            max_events_per_year=1, **LEGACY,
+            max_events_per_year=1, **CLIP_CAP,
         )
         assert len(occ) == 1
         seen.update(occ)
@@ -106,7 +106,7 @@ def test_length_mismatch_raises():
 def test_generate_sequences_shape():
     seqs = generate_event_sequences(
         EVENT_NAMES, EVENT_FREQS, n_seq=4, n_years=10,
-        rng=np.random.default_rng(2), max_events_per_year=4, **LEGACY,
+        rng=np.random.default_rng(2), max_events_per_year=4, **CLIP_CAP,
     )
     assert len(seqs) == 4
     assert all(len(s) == 10 for s in seqs)
@@ -114,10 +114,10 @@ def test_generate_sequences_shape():
 
 def test_generate_sequences_reproducible():
     a = generate_event_sequences(
-        EVENT_NAMES, EVENT_FREQS, 3, 5, np.random.default_rng(7), **LEGACY
+        EVENT_NAMES, EVENT_FREQS, 3, 5, np.random.default_rng(7), **CLIP_CAP
     )
     b = generate_event_sequences(
-        EVENT_NAMES, EVENT_FREQS, 3, 5, np.random.default_rng(7), **LEGACY
+        EVENT_NAMES, EVENT_FREQS, 3, 5, np.random.default_rng(7), **CLIP_CAP
     )
     assert a == b
 
@@ -126,7 +126,7 @@ def test_cap_respected_across_sequences():
     freqs = np.ones(7)
     seqs = generate_event_sequences(
         EVENT_NAMES, freqs, 5, 8, np.random.default_rng(0),
-        max_events_per_year=2, **LEGACY,
+        max_events_per_year=2, **CLIP_CAP,
     )
     for seq in seqs:
         for year in seq:
@@ -161,11 +161,11 @@ def test_poisson_allows_multiple_occurrences_per_year():
     assert 2.0 < np.mean(counts) < 4.0   # mean count ~ freq
 
 
-def test_poisson_rate_recovery_vs_legacy_defect():
+def test_poisson_rate_recovery_vs_clipped_draw():
     """
     Regression: with Poisson + no cap, every event's realised occurrence
     rate matches its nominal frequency — including a rare extreme sharing
-    the catalogue with many sub-annual nuisance events.  Under the legacy
+    the catalogue with many sub-annual nuisance events.  Under the clipped
     clip+cap draw the same extreme is silently discarded most of the years
     it occurs (its realised rate collapses).
     """
@@ -190,11 +190,11 @@ def test_poisson_rate_recovery_vs_legacy_defect():
     poisson_rate = realised_extreme_rate("poisson", cap=None)
     assert 22 / n_years <= poisson_rate <= 78 / n_years
 
-    # Legacy clip + cap of 5: 11 events are guaranteed every year, so when
+    # Clip + cap of 5: 11 events are guaranteed every year, so when
     # the extreme is drawn it survives the uniform 5-of-12 subsample with
     # probability ~5/12 -> realised rate collapses well below nominal.
-    legacy_rate = realised_extreme_rate("bernoulli_clip", cap=5)
-    assert legacy_rate < 0.7 * 0.01
+    clipped_rate = realised_extreme_rate("bernoulli_clip", cap=5)
+    assert clipped_rate < 0.7 * 0.01
 
     # And the nuisance events' mean count per year is preserved by Poisson.
     rng = np.random.default_rng(7)

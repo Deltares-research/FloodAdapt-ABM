@@ -26,7 +26,7 @@ dependencies = [
 # Full lookup-table generation pipeline (stage 1) requires flood-adapt
 pipeline = ["flood-adapt==1.1.3"]
 # mesa is NOT imported anywhere in FloodAdapt-ABM or native DYNAMO-M; the pin
-# is retained here only to mirror the verified Phase-4b-full conda environment
+# is retained here only to mirror the verified native-driver conda environment
 # (verification/preflight_4b_full/step1_versions.json).
 dynamo = ["mesa==3.3.1"]
 dev = ["pytest>=7", "pytest-cov", "ipykernel", "jupyterlab"]

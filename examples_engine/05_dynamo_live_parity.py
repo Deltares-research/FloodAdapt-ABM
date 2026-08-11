@@ -1,7 +1,7 @@
 """
 05_dynamo_live_parity.py
 ========================
-Phase 4a: the ``DynamoLiveRule`` parity oracle.  This rule drives the **native**
+The ``DynamoLiveRule`` parity oracle.  This rule drives the **native**
 DYNAMO-M ``DecisionModule`` (``calcEU_do_nothing`` / ``calcEU_adapt``) instead of
 the NumPy kernels ported into the bridge.  Its purpose is to *prove* the ported
 ``SEURule`` has not drifted from upstream DYNAMO-M.
@@ -110,7 +110,7 @@ def main() -> None:
     print(
         "\nThe ported SEURule reproduces native DYNAMO-M: identical decisions,\n"
         "EU differences at float32 level. The same rule interface is the seam\n"
-        "for the future Phase-4b Mesa-native integration."
+        "for the Mesa-native drivers."
     )
     print("\nDone. See ../docs and the progress_todos parity report for detail.")
 

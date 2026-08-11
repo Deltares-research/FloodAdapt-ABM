@@ -32,7 +32,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 # Candidate locations of the real Charleston lookup table (optional).
-# FA_ABM_REAL_TABLE_PATH takes precedence (same env var as the PRE.2
+# FA_ABM_REAL_TABLE_PATH takes precedence (same env var as the
 # real-table gate); the sibling-checkout convention is the fallback.
 _REAL_TABLE_CANDIDATES = [
     *( [Path(os.environ["FA_ABM_REAL_TABLE_PATH"])]

@@ -3,7 +3,7 @@
 ======================
 The Strategy Pattern in action: swap the *behaviour* without touching the
 engine.  Runs the same scenario twice — once with the DYNAMO-M ``SEURule`` and
-once with the legacy ``ThresholdRule`` — and compares the outcomes.
+once with the simpler ``ThresholdRule`` — and compares the outcomes.
 
 What you learn here
 -------------------
@@ -53,8 +53,8 @@ def main() -> None:
     print(f"Mean EU(adapt) : {np.nanmean(res_seu['eu_adapt_history']):,.0f}")
     print(f"Mean EU(stay)  : {np.nanmean(res_seu['eu_do_nothing_history']):,.0f}")
 
-    # Scenario 2 - ThresholdRule (legacy heuristic, same engine + config).
-    _shared.banner("Scenario 2: ThresholdRule (legacy 0.3 heuristic)")
+    # Scenario 2 - ThresholdRule (damage-threshold heuristic, same engine + config).
+    _shared.banner("Scenario 2: ThresholdRule (0.3 damage threshold)")
     thresh = ThresholdRule(cfg.decision, damage_threshold=0.30)
     eng_thr, res_thr = _run(ds, cfg, rule=thresh)
     print(f"Final adoption : {res_thr['adoption_fraction'][:, -1].mean():.1%}")

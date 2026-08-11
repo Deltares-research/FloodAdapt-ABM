@@ -206,7 +206,7 @@ classDiagram
 | `mesa_native_full.py` | The preferred driver: a real honeybees `Model` owns the clock |
 | `mesa_native.py` | Framework-free mirror of the tick loop (verification) |
 | `coastal_node_adapter.py` | Lookup table to `CoastalNode` array adapter |
-| `abm_simulator.py` | Deprecated legacy simulator; do not add call sites |
+| `abm_simulator.py` | Deprecated standalone simulator; do not add call sites |
 
 ### 2.2 The decision-rule interface
 
@@ -246,7 +246,7 @@ clock, with the native DYNAMO-M `DecisionModule` making the decisions.
 |---|---|---|---|
 | `DynamoLiveRule` | `preferred` | Native DYNAMO-M `calcEU_do_nothing`, `calcEU_adapt`, `calcEU_insure` | Application runs. Floodproofing and insurance both decided by native code |
 | `SEURule` | `reference` | The pure-NumPy port of those kernels | When DYNAMO-M is absent, and for per-household (risk-based) premiums |
-| `ThresholdRule` | `experiment` | `damage/max_pot_dmg > threshold` | The pre-coupling baseline, for comparison |
+| `ThresholdRule` | `experiment` | `damage/max_pot_dmg > threshold` | Simple baseline, for comparison |
 
 `DynamoLiveRule` and `SEURule` are parity-gated: identical agent state gives a
 relative EU error below 1e-4 and **identical actions**, so their results are
@@ -292,7 +292,7 @@ gate. That is the extension contract.
 | `run_mesa_native_full` | `preferred` | A real honeybees `Model` (`FloodAdaptSLRModelFull`) | Application runs |
 | `SimulationEngine.run` | kernel | The engine's own year loop | Experiments, sweeps, the parallel backend `n_jobs` |
 | `run_mesa_native` | `verification` | A framework-free mirror of the native tick loop | The bit-parity gate only |
-| `ABMSimulator` | `deprecated` | Legacy | Backward compatibility only |
+| `ABMSimulator` | `deprecated` | Threshold | Backward compatibility only |
 
 **The drivers are not alternative implementations.** They are wrappers whose
 contract is bit-for-bit equality; each delegates all numeric work to
@@ -363,15 +363,15 @@ from floodadapt_abm import CouplingConfig
 config = CouplingConfig()                       # current defaults
 config.decision.nuisance_freq_threshold = 1.0   # recommended for Charleston
 
-# Pre-review alternatives, named explicitly (see section 11)
+# Alternative behaviours, named explicitly (see section 11)
 config.decision.event_draw_mode = "bernoulli_clip"
 config.decision.perception_mode = "binary"
 ```
 
 `CouplingConfig` holds `DecisionConfig` (behaviour) and `NetCDFMappingConfig`
-(schema strings). The `CouplingConfig.legacy()` preset was retired in 2026-08;
-each behaviour switch still accepts its pre-review alternative, so name the
-ones you want instead of pinning a bundle.
+(schema strings). There is no preset bundling the alternative behaviours:
+each behaviour switch accepts its alternative individually, so name the ones
+you want explicitly.
 
 ## 6. Performance and scaling
 
@@ -395,7 +395,7 @@ grid: extend the grid in stage 1 rather than relying on that.
 **The linear kernel is dtype-pinned, and deliberately does not use SciPy.**
 The damage cube is `float32` while the SLR grid is `float64`, so a mixed-dtype
 interpolation depends on *where* the promotion to `float64` happens. SciPy's
-legacy `interp1d` decides that internally, and that decision is an
+`interp1d` decides that internally, and that decision is an
 implementation detail of a deprecated API rather than a guaranteed contract:
 it can differ between SciPy builds and between NumPy promotion regimes
 (NEP 50). Interpolated damages routinely land within one `float32` unit in the
@@ -568,12 +568,22 @@ times per year (`event_draw_mode="poisson"`), with no discard cap
 (`max_events_per_year=None`). Realised damage is bounded per occurrence by
 `max_pot_dmg`.
 
-**In plain language.** A frequency of 0.01 means "about once every 100 years";
-a frequency of 3 means "about three times a year". A coin-flip (Bernoulli) draw
-can only represent probabilities up to 1, so it must round any rate above 1
-down to "certain", which distorts the statistics. The Poisson distribution is
-the standard model for "how many times does something with a known average rate
-happen this year". The benefits are concrete:
+**Why Poisson and not Bernoulli.** The two distributions answer different
+questions, and only one of them matches what `freq` means.
+
+| | Bernoulli | Poisson |
+|---|---|---|
+| Question it answers | did it happen? | how many times did it happen? |
+| Parameter | probability $p \in [0, 1]$ | rate $\lambda \ge 0$, of any size |
+| Possible outcomes | 0 or 1 | 0, 1, 2, … |
+| Mean | $p$ | $\lambda$ |
+| A rate above 1 | inexpressible, must be clipped | represented exactly |
+| P(at least one) | $p$ | $1 - e^{-\lambda}$ |
+
+A frequency of 0.01 means "about once every 100 years"; a frequency of 3 means
+"about three times a year". A Bernoulli trial can only carry a probability, so
+it must round any rate above 1 down to certainty. Poisson carries the rate
+itself. Four consequences follow:
 
 1. every event keeps its true long-run rate, rare extremes included;
 2. an event with rate 3 can genuinely happen 0, 2 or 5 times in one year;
@@ -582,15 +592,33 @@ happen this year". The benefits are concrete:
 4. the simple sum $\mathrm{EAD}_i = \sum_e f_e\, D_{i,e}$ becomes the exact
    expected annual damage, which the insurance premium builds on.
 
+Poisson also keeps the decision side consistent: the exceedance conversion
+below is $1 - e^{-f}$, which is $P(n \ge 1)$ for exactly this process. A
+clipped Bernoulli draw cannot be reconciled with any exceedance curve above
+rate 1, because it has already discarded the rate.
+
 This differs deliberately from DYNAMO-M's `stochastic_flood`
 (`flood_risk.py:583`), which performs a single draw and allows at most one
 flood per year against a fixed return-period set.
 
-The **legacy** draw (one Bernoulli trial per event with $p_e = \min(f_e, 1)$
-and a random cap of 4) clipped sub-annual events to certainty and discarded
-rare extremes at the same rate as nuisance floods. It is preserved bit-exactly
-as the `"bernoulli_clip"` option, which notebook 2 uses for its matched-hazard
-comparison, and its RNG call order must never be changed.
+**Both draws are available; Poisson is the one to use.** `"bernoulli_clip"`
+runs one Bernoulli trial per event with $p_e = \min(f_e, 1)$. Paired with a
+random cap it clips sub-annual events to certainty and discards rare extremes
+at the same rate as nuisance floods. It is kept as an ordinary config option so
+the two hazards can be compared inside one script, which is what notebook 2's
+matched-hazard runs do, and its RNG call order is frozen so those runs stay
+controlled. It is not a setting for a real study.
+
+**Where the two differ once the nuisance filter is on.** Every retained rate is
+then below 1, nothing clips, and the two draws have the *same* expected
+occurrence count. They still differ in the count *distribution*, and that is
+what an agent-based model feels. Bernoulli cannot place two occurrences in one
+year, so it converts multiplicity into extra **flood years**. Since
+`flood_timer` resets on any flood in a year, the decision-relevant quantity is
+$P(n \ge 1)$, where the two disagree: $f$ against $1 - e^{-f}$. At a rate of
+0.85 that is 85 % of years against 57 %. Under Bernoulli risk perception stays
+permanently elevated, which suppresses the alarm-then-complacency cycle the
+perception submodel exists to represent.
 
 **Nuisance filter.** For event sets containing sub-annual events (the
 Charleston set has about 11), set `nuisance_freq_threshold = 1.0`. Those events
@@ -604,8 +632,10 @@ converts rates to annual exceedance probabilities
 $$p_e = 1 - e^{-f_e},$$
 
 the exact probability of at least one Poisson arrival in a year, before the
-trapezoidal integration. This resolves the historical dual use of one array as
-both rate and probability.
+trapezoidal integration. Rates and probabilities are distinct quantities, and
+this keeps the decision side on the probability one: raw rates above 1 would
+clamp onto the 0.998 perceived-probability cap and collapse the no-flood band
+of the integral.
 
 ### 9.4 Submodel: risk perception
 
@@ -637,10 +667,10 @@ s_i = \min\!\left(\frac{\text{realised damage}_i}{\text{max. potential damage}_i
 
 The response is monotone in $s$ and pinned at both ends for every $\gamma$:
 $s = 0$ gives no spike, $s = 1$ gives the full $\mathrm{rp}_{\max}$ spike, so a
-total loss always reproduces the legacy peak. **γ is the only shape parameter
+total loss gives the full peak. **γ is the only shape parameter
 in the perception block, and it spans the whole hypothesis range.**
 
-![Severity response: the γ family, and the two retired forms against their γ equivalents](images/perception_severity_gamma.png)
+![Severity response: the γ family](images/perception_severity_gamma.png)
 
 ### What each region of γ means
 
@@ -663,16 +693,11 @@ damaging 25 % of the home already triggers 50 % of the maximum spike and one
 damaging 50 % triggers about 71 %, whereas linear scaling would underweight
 moderate floods at both points.
 
-> **Correction, 2026-08-07.** Earlier revisions of this section, of the
-> `DecisionConfig` docstring and of the review response stated that 25 % damage
-> gives "about 71 %" of the spike. That was wrong: `0.25^0.5 = 0.50`. The 71 %
-> figure belongs to 50 % damage. The code was always right (pinned by
-> `test_severity_scales_peak_with_power_law`); only the prose was wrong.
-
 ### Why there is only one form
 
-Two alternative forms shipped between 2026-07 and 2026-08 and were **removed
-after measurement**: `saturating_exp`, concave with finite slope at zero,
+Two further one-parameter forms are **not supported**, because measurement
+showed they add no hypothesis γ cannot already express. `saturating_exp`,
+concave with finite slope at zero,
 
 $$P_i = \mathrm{rp}_{\max}\,\frac{1 - e^{-k s_i}}{1 - e^{-k}},$$
 
@@ -1043,15 +1068,10 @@ Verification means checking that the code does what the equations say.
   `real_table_gate`, `mesa_native_full`). They run under the current package
   defaults.
 
-**Retired 2026-08: the legacy-reproduction layer.** A third contract used to
-sit alongside the two above: `CouplingConfig.legacy()` runs reproduced
-pre-2026-07 behaviour bit-for-bit, pinned by a golden regression
-(`tests/test_legacy_mode.py`, checked against a stored `.npz` captured from the
-pre-refactor kernels). That contract, its preset, its golden file and the
-`FA_ABM_HARNESS_CONFIG` switch were all removed once reproducing the old
-behaviour stopped being a requirement. The alternative algorithms themselves
-survive as ordinary config options. The one piece deleted outright is
-`income_mode="mpd_ratio"`: it made income and adaptation cost both
+**There is no bit-exact reproduction contract for older behaviour.** The
+alternative algorithms are available as ordinary config options, but no test
+pins a stored run of them. One mode is unsupported outright:
+`income_mode="mpd_ratio"`, which made income and adaptation cost both
 proportional to `max_pot_dmg`, so the affordability gate reduced to a single
 population-wide constant (measured at 1.6887 for every household) and never
 bound for anybody.
@@ -1117,7 +1137,6 @@ pricing knobs, income synthesis) are inventoried in the method guide.
 | **Loading** | What an insurer adds on top of the expected-loss price for expenses, reinsurance and capital; `insurance_loading`, estimated as 1 / loss ratio |
 | **Loss ratio** | Claims paid divided by premiums collected; the published statistic a loading is derived from |
 | **Bit-parity gate** | A test asserting two code paths produce *byte-identical* arrays, not merely close ones; used to prove the drivers are wrappers around one kernel |
-| **Golden wall** *(retired 2026-08)* | The former bit-exact legacy regression: `tests/test_legacy_mode.py` compared runs under `CouplingConfig.legacy()` against arrays stored in `tests/data/golden_legacy_mock.npz`, captured from the pre-refactor kernels. The rule was "if it fails, fix the leak, never re-capture the file". Retired with the legacy-reproduction layer (§11); the term survives in the git history and in `docs/progress/` |
 
 # Appendix B. Deviations from native DYNAMO-M
 
@@ -1186,8 +1205,8 @@ drift from the implementation:
   percentiles, the severity-exponent sweep, Poisson rate recovery, and the
   insurance pricing modes side by side.
 - `notebooks/2_run_coupled_abm.ipynb` runs the full scenario set on the real
-  Charleston table, including the legacy comparison and the insurance
-  experiment.
+  Charleston table, including the matched-hazard comparison and the
+  insurance experiment.
 
 For the single-event case the trapezoidal integral collapses to a closed form
 useful for hand checks:
@@ -1214,7 +1233,9 @@ Model lineage and protocol:
 Tierolf, L., Haer, T., Botzen, W. J. W., de Bruijn, J. A., Ton, M. J.,
 Reimann, L., & Aerts, J. C. J. H. (2023). *A coupled agent-based model for
 France for simulating adaptation and migration decisions under future coastal
-flood risk.* Scientific Reports 13, 4176.
+flood risk.* Scientific Reports 13, 4176. <https://doi.org/10.1038/s41598-023-31351-y>
+Source code: [VU-IVM/DYNAMO-M](https://github.com/VU-IVM/DYNAMO-M/tree/v0.1.4), v0.1.4, the version every parity
+gate in this repository is run against.
 
 Grimm, V., Railsback, S. F., Vincenot, C. E., et al. (2020). *The ODD protocol
 for describing agent-based and other simulation models: a second update to

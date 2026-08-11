@@ -1,7 +1,7 @@
 """
 06_mesa_native_driving.py
 =========================
-Phase 4b: **Mesa-native driving** — inverting time ownership.
+**Mesa-native driving**: inverting time ownership.
 
 In examples 01-05 the year loop lives inside ``engine.run()``. Here the loop is
 owned by a small model that advances one tick at a time via ``model.step()``,
@@ -15,7 +15,7 @@ What you learn here
 * ``model.step()`` advances exactly one year; ``model.run_model()`` is the tick
   loop,
 * ``run_mesa_native(...)`` is a drop-in analogue of ``engine.run(...)`` and
-  produces **bit-for-bit identical** results (the Phase-4b gate),
+  produces **bit-for-bit identical** results (the tick-driver parity gate),
 * the ``DecisionRule`` seam is what makes this time-ownership migration
   non-breaking (and paves the way to the native honeybees ``model.step()``).
 
@@ -55,7 +55,7 @@ def _manual_tick_walkthrough(ds, cfg) -> None:
 
 
 def _equivalence_check(ds, cfg) -> None:
-    """Show run_mesa_native == engine.run bit-for-bit (the Phase-4b gate)."""
+    """Show run_mesa_native == engine.run bit-for-bit (the parity gate)."""
     native = run_mesa_native(SimulationEngine(ds=ds, config=cfg), SLR, no_seq=5, seed=SEED)
     loop = SimulationEngine(ds=ds, config=cfg).run(SLR, no_seq=5, seed=SEED)
 
@@ -83,10 +83,10 @@ def main() -> None:
         "\nThe loop owner changed (engine.run -> model.step ticks) but the\n"
         "results did not. The DecisionRule.should_adapt seam is unchanged, so\n"
         "migrating time toward the native honeybees model.step() is non-breaking.\n"
-        "Example 07 (Phase 4b-full) binds the real honeybees Model and the native\n"
+        "Example 07 binds the real honeybees Model and the native\n"
         "DYNAMO-M DecisionModule on top of this same seam."
     )
-    print("\nDone. Continue with 07_mesa_native_full.py (Phase 4b-full).")
+    print("\nDone. Continue with 07_mesa_native_full.py.")
 
 
 if __name__ == "__main__":

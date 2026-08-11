@@ -1,7 +1,7 @@
 """
 test_dynamo_live_rule.py
 ========================
-Phase-4a tests for :class:`floodadapt_abm.dynamo_live_rule.DynamoLiveRule` - the
+Tests for :class:`floodadapt_abm.dynamo_live_rule.DynamoLiveRule` - the
 adapter that drives the **native** DYNAMO-M ``DecisionModule`` as a parity
 oracle for the ported :class:`~floodadapt_abm.decision_rule.SEURule`.
 
@@ -102,7 +102,7 @@ class TestAvailability:
 
 
 # ===========================================================================
-# 2. Parity gate (the Phase-1 cross-check)
+# 2. Parity gate (ported vs native)
 # ===========================================================================
 @requires_dynamo
 class TestParityWithSEURule:

@@ -1,10 +1,10 @@
 """
 test_mesa_native.py
 ===================
-Phase-4b tests for the Mesa-native driving seam
+Tests for the Mesa-native driving seam
 (:mod:`floodadapt_abm.mesa_native`).
 
-The defining property of Phase 4b is **time-ownership inversion**: the year
+The defining property of this driver is **time-ownership inversion**: the year
 loop moves from ``SimulationEngine.run`` into ``FloodAdaptSLRModel.step`` ticks,
 mirroring the native DYNAMO-M ``SLRModel.run_model``.  The central gate is that
 this inversion is *non-breaking*: the tick-driven driver must reproduce
@@ -41,7 +41,7 @@ def _engine(rule_factory=None, seed=42):
 
 
 # ---------------------------------------------------------------------------
-# The Phase-4b gate: tick driver == engine.run(), bit for bit.
+# The parity gate: tick driver == engine.run(), bit for bit.
 # ---------------------------------------------------------------------------
 class TestBitParityWithEngineRun:
     @pytest.mark.parametrize("no_seq", [1, 3])

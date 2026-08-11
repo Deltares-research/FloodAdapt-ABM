@@ -1,7 +1,7 @@
 """
 07_mesa_native_full.py
 ======================
-Phase **4b-full**: **native-class integration** — the real honeybees ``Model``
+**Native-class integration**: the real honeybees ``Model``
 owns time and the native DYNAMO-M ``DecisionModule`` makes the decisions.
 
 Example 06 mirrored the DYNAMO-M tick loop with a *framework-free* Python object.
@@ -10,7 +10,7 @@ Here the driver (:class:`FloodAdaptSLRModelFull`) **subclasses the real honeybee
 is provided by the genuine framework — exactly as the upstream ``SLRModel`` does.
 Each year's decision flows through the native ``DecisionModule.calcEU_*`` via
 :class:`DynamoLiveRule`, and the coastal-node population is fed **entirely from
-the FloodAdapt lookup table** through the PRE.4 ``LookupTableAdapter`` (no
+the FloodAdapt lookup table** through the ``LookupTableAdapter`` (no
 GLOFRIS / gravity / geodata).
 
 What you learn here
@@ -19,7 +19,7 @@ What you learn here
   that owns time via the framework clock,
 * ``run_mesa_native_full(...)`` is a drop-in analogue of ``engine.run(...)`` /
   ``run_mesa_native(...)`` and is **bit-for-bit identical** — the triple-parity
-  4b-full gate,
+  triple-parity gate,
 * the lookup-table adapter round-trips (FloodAdapt -> node arrays -> engine
   state) every tick without perturbing the shared kernel,
 * driving with a :class:`DynamoLiveRule` makes it a true *native-class*
@@ -94,15 +94,15 @@ def _triple_equivalence_gate(ds, cfg, rule_factory) -> None:
     )
     print(f"  run_mesa_native_full == engine.run       : {full_vs_loop}")
     print(f"  run_mesa_native_full == run_mesa_native  : {full_vs_scaf}")
-    print(f"  4b-full gate: {'PASS' if full_vs_loop and full_vs_scaf else 'FAIL'}")
+    print(f"  triple-parity gate: {'PASS' if full_vs_loop and full_vs_scaf else 'FAIL'}")
     print(f"  (final adoption, mean over sequences: {full['adoption_fraction'][:, -1].mean():.1%})")
 
 
 def main() -> None:
-    _shared.banner("07 - PHASE 4b-full: native-class integration (honeybees Model)")
+    _shared.banner("07 - Native-class integration (honeybees Model owns time)")
     if not HONEYBEES_AVAILABLE:
         print("honeybees is not importable in this environment; install honeybees")
-        print("(and mesa) to run the Phase 4b-full driver. See example 06 for the")
+        print("(and mesa) to run the native-class driver. See example 06 for the")
         print("framework-free equivalent.")
         return
 

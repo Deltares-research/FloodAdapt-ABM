@@ -1,7 +1,7 @@
 """
 test_agent_state.py
 ===================
-Unit tests for the ``AgentState`` container (Phase-3 unified per-agent state).
+Unit tests for the ``AgentState`` per-agent state container.
 """
 from __future__ import annotations
 
@@ -78,7 +78,7 @@ def test_new_fields_copied_deeply():
 
 
 def test_positional_construction_backfills_new_fields():
-    """Legacy positional construction (pre-severity API) still works."""
+    """Positional construction without the optional fields still works."""
     n = 3
     ones = np.ones(n, dtype=np.float32)
     st = AgentState(

@@ -1,9 +1,9 @@
 """
 test_coastal_node_adapter.py
 ============================
-PRE.4 tests: the lookup-table -> CoastalNode adapter prototype must map every
+The lookup-table -> CoastalNode adapter must map every
 array **bit-identically** in both directions on a frozen synthetic population,
-so the eventual 4b-full ≡ 4b-scaffold gate stays attributable to the
+so the driver parity gates stay attributable to the
 environment swap alone.
 """
 from __future__ import annotations

@@ -180,19 +180,19 @@ class DecisionConfig:
           realised long-run rate of every event (including sub-annual
           ``freq > 1`` events and rare extremes) equals its nominal
           frequency, and one event may occur several times in a year.
-        * ``"bernoulli_clip"`` — legacy behaviour: one Bernoulli trial per
+        * ``"bernoulli_clip"`` — one Bernoulli trial per
           event with ``p = min(freq_i * dt, 1)``.  Rates above ``1/dt`` are
           clipped to certainty, so sub-annual events occur every year and
           (combined with ``max_events_per_year``) crowd out extremes.
-          Retained for reproducing historical results only.
+          Available for sensitivity work; not for a real study.
         Default: ``"poisson"``.
     nuisance_freq_threshold : float or None
         When set, events with ``freq > threshold`` (events/year) are dropped
         from the catalogue once at data load — from both the hazard draw and
         the SEU decision integral, which therefore always see the same event
-        set.  ``1.0`` reproduces the historical pre-coupling setup that
-        disregarded sub-annual "nuisance" events entirely, and is the
-        recommended setting for event sets containing ``freq > 1`` entries
+        set.  ``1.0`` disregards sub-annual "nuisance" events entirely and
+        is the recommended setting for event sets containing ``freq > 1``
+        entries
         (their near-certain probabilities otherwise collapse onto the 0.998
         perceived-probability cap inside the SEU integral).
         ``None`` keeps every event.
@@ -209,7 +209,7 @@ class DecisionConfig:
 
         * ``"largest_damage"`` — keep the most damaging occurrences
           (deterministic, no extra RNG; preserves extremes).
-        * ``"random"`` — legacy: uniform random selection without
+        * ``"random"`` — uniform random selection without
           replacement (extremes are discarded at the same rate as nuisance
           events).
         Default: ``"largest_damage"``.
@@ -221,7 +221,7 @@ class DecisionConfig:
           probability of at least one occurrence of a Poisson arrival with
           rate ``freq_i``; always < 1, consistent with the exceedance-curve
           semantics of the integral.
-        * ``"raw_freq"`` — legacy: ``p_i = freq_i`` used directly (valid
+        * ``"raw_freq"`` — ``p_i = freq_i`` used directly (valid
           only while every frequency is well below 1).
         Default: ``"exceedance"``.
     perception_mode : str
@@ -230,16 +230,16 @@ class DecisionConfig:
         * ``"severity"`` — the post-flood perception peak scales with the
           damage severity ``s = realised / max_pot_dmg`` through the power
           law ``s ** perception_severity_exponent``, so a nuisance flood
-          and a catastrophe are no longer identical to the agent.  A
+          and a catastrophe are distinguished by the agent.  A
           deliberate improvement beyond native DYNAMO-M, whose trigger is
           binary (``flood_risk.py:619``).
-        * ``"binary"`` — legacy/native: any positive damage produces the
+        * ``"binary"`` — native behaviour: any positive damage produces the
           full ``risk_perc_max`` spike.
         Default: ``"severity"``.
     flood_significance_threshold : float
         Minimum damage severity (fraction of ``max_pot_dmg``) for a flood to
         register as experienced — resets the flood timer and spikes risk
-        perception.  ``0.0`` reproduces the legacy ``realised > 0`` trigger
+        perception.  ``0.0`` gives the bare ``realised > 0`` trigger
         (where float round-off or a residual post-adaptation trickle counts
         as a flood).
         Default: ``0.01``.
@@ -286,7 +286,7 @@ class DecisionConfig:
           of building value, so the affordability constraint can genuinely
           bind.
 
-        The former ``"mpd_ratio"`` mode was **removed** (2026-08).  It set
+        The ``"mpd_ratio"`` mode is **not supported**.  It set
         ``income = max_pot_dmg / income_to_wealth_ratio``, so wealth cancelled
         back to exactly the building value and both sides of the
         affordability test became proportional to ``max_pot_dmg``.  The gate
@@ -311,9 +311,9 @@ class DecisionConfig:
         of the lookup table).  Mirrors native DYNAMO-M, where the cost is a
         country-scaled constant (10,800 EUR France-anchored,
         ``prepare_scale_to_GDP.py``) rather than a fraction of property
-        value.  ``None`` falls back to the legacy
+        value.  ``None`` falls back to
         ``adaptation_cost_fraction * max_pot_dmg``.
-        Default: ``None`` (legacy).
+        Default: ``None``.
     include_insurance : bool
         Offer flood insurance as a third decision option (ported
         ``calcEU_insure``; flat community premium = mean expected annual
@@ -380,7 +380,7 @@ class DecisionConfig:
     lifespan_dryproof: int = 75
 
     # -- Behaviour-mode switches (see class docstring for semantics) --------
-    # Each switch also accepts the pre-2026-07 alternative, kept as an
+    # Each switch also accepts an alternative behaviour, kept as an
     # ordinary option for sensitivity work (see the class docstring).
     event_draw_mode: str = "poisson"
     nuisance_freq_threshold: float | None = None

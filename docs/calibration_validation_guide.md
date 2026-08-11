@@ -20,6 +20,14 @@ Two terms used throughout:
 The guiding principle is cost ordering. Do the free checks first. Collect
 new data only when the free checks show it matters.
 
+Several defaults below are inherited from DYNAMO-M, the model this coupling
+ports its decision science from: [Tierolf et al., 2023](https://doi.org/10.1038/s41598-023-31351-y),
+*A coupled agent-based model for France for simulating adaptation and
+migration decisions under future coastal flood risk*, Scientific Reports 13,
+4176. Source: [VU-IVM/DYNAMO-M](https://github.com/VU-IVM/DYNAMO-M/tree/v0.1.4) (v0.1.4). Those defaults were
+calibrated for France, so treat them as starting points for a new site, not
+as measured values.
+
 ## 1. Parameter inventory
 
 The table lists every behavioural parameter, where its default comes from,

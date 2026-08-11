@@ -6,7 +6,7 @@ pipeline), income percentiles, the fixed adaptation cost, and, critically,
 that the affordability gate genuinely binds for part of the population.
 
 That last property is why the ``income_mode="mpd_ratio"`` fallback was
-removed in 2026-08: it made income and adaptation cost both proportional to
+unsupported: it made income and adaptation cost both proportional to
 ``max_pot_dmg``, so the gate reduced to one population-wide constant and
 never bound for anybody.
 """
@@ -131,9 +131,9 @@ def test_affordability_gate_binds_partially_under_new_economics():
 
 def test_removed_mpd_ratio_income_mode_raises_a_directed_error():
     """
-    The degenerate legacy income mode must fail loudly, not silently.
+    The degenerate income mode must fail loudly, not silently.
 
-    It was removed in 2026-08; anyone carrying an old config should get an
+    It is unsupported; anyone carrying an old config should get an
     error that names the replacement rather than a bare "unknown mode".
     """
     cfg = _synthetic_cfg()

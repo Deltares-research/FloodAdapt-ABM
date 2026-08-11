@@ -4,6 +4,12 @@ FloodAdapt-ABM is a lightweight agent-based simulator that processes a precomput
 
 Household behaviour is pluggable. The **preferred path is the fully native coupling**: a real honeybees `Model` owns the clock and the native **DYNAMO-M** decision module decides both floodproofing and insurance. A parity-gated pure-NumPy port stands in when DYNAMO-M is not installed, and a simple damage-threshold rule is kept as a comparison baseline.
 
+> **DYNAMO-M.** The household decision science comes from DYNAMO-M: Tierolf et al. (2023),
+> [*A coupled agent-based model for France for simulating adaptation and migration decisions
+> under future coastal flood risk*](https://doi.org/10.1038/s41598-023-31351-y), Scientific Reports 13, 4176.
+> Source: [VU-IVM/DYNAMO-M](https://github.com/VU-IVM/DYNAMO-M/tree/v0.1.4) (v0.1.4, the version this coupling is gated against).
+> It is an optional dependency; point at a checkout with `DYNAMO_M_PATH`.
+
 ---
 
 ## Installation
@@ -43,7 +49,7 @@ There is exactly **one** compute kernel, `SimulationEngine.step`. Everything els
 |---|---|---|
 | `DynamoLiveRule` | **preferred** | Native DYNAMO-M decides floodproofing and insurance |
 | `SEURule` | reference | Parity-gated port: used when DYNAMO-M is absent, and required for per-household (risk-based) premiums |
-| `ThresholdRule` | experiment | The pre-coupling damage-threshold baseline |
+| `ThresholdRule` | experiment | Simple damage-threshold baseline |
 
 `preferred_decision_rule(config)` picks the right rule for the configuration and environment. `DynamoLiveRule` and `SEURule` are parity-gated (relative expected-utility error below 1e-4, identical actions), so their results are interchangeable. The port is selected only when DYNAMO-M is absent or when per-household premiums are configured, which the native kernel cannot express.
 
@@ -110,7 +116,7 @@ Income has **two independent axes**, and only one of them needs building locatio
 |---|---|---|---|
 | `DynamoLiveRule` | **preferred** | Calls the **native** DYNAMO-M `DecisionModule` (optional dependency, guarded import via `DYNAMO_M_PATH`), including native `calcEU_insure` | Application runs, and the seam for any future DYNAMO-M coupling |
 | `SEURule` | reference | The same SEU science ported to pure NumPy: ex-ante expected-utility maximisation with CRRA utility, risk-perception decay, affordability cap, loan amortisation, 75-y lifespan reset; 3-way `decide()` when insurance is on | Fallback when DYNAMO-M is absent; **required for `insurance_pricing="risk_based"`** (native prices one flat rate only). Faster in parallel (releases the GIL). Doubles as the parity oracle proving the port has not drifted |
-| `ThresholdRule` | experiment | Legacy ex-post rule: adapt when `damage/max_pot_dmg > 0.3` | Baseline comparison; reproduces `ABMSimulator` bit-for-bit |
+| `ThresholdRule` | experiment | Ex-post rule: adapt when `damage/max_pot_dmg > 0.3` | Baseline comparison; reproduces `ABMSimulator` bit-for-bit |
 | your own | experiment | Subclass `DecisionRule`, implement `should_adapt(...)` (two-way rules need no changes for the 3-way contract) | See `examples_engine/03_custom_rule.py` |
 
 Call `preferred_decision_rule(config.decision)` rather than branching on `DYNAMO_M_AVAILABLE` yourself.

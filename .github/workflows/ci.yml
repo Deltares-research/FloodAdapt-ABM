@@ -1,7 +1,6 @@
-# HYG.3 (2026-07-09): lock in the gated Phase-4b scaffold while 4b-full work
-# churns.  Runs the full pytest suite (all bit-parity gates), the numbered
-# examples on the synthetic table, and the vendored Phase-4b verification
-# harness.  DYNAMO-M-dependent paths (example 05, Phase-4a parity) skip/exit
+# Runs the full pytest suite (all bit-parity gates), the numbered examples on
+# the synthetic table, and the vendored tick-driver verification harness.
+# DYNAMO-M-dependent paths (example 05, the native EU parity gate) skip or exit
 # cleanly by design when DYNAMO-M is absent, so no secret checkout is needed.
 name: CI
 

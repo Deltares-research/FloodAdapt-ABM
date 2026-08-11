@@ -1,20 +1,16 @@
 """
 coastal_node_adapter.py
 =======================
-PRE.4 (Phase 4b-full pre-flight): prototype of the **lookup-table ->
-CoastalNode adapter** — the single genuinely new modelling artefact of the
-4b-full migration (roadmap step 3 in
-``docs/20260709_proposed_development_architecture_steps.md`` Sec.7.2).
+The **lookup-table to CoastalNode adapter**: the seam that lets the native
+DYNAMO-M data model be driven from a FloodAdapt lookup table.
 
 In native DYNAMO-M each region is a ``CoastalNode`` holding per-household
 arrays (``node.n``, ``node.property_value``, ``node.damages_coastal_cells``,
 ``node.adapt``, ``node.time_adapt``); each tick, ``calcEU_*`` consumes those
-arrays.  In 4b-full the same arrays must be **populated from the FloodAdapt
-lookup table** instead of from GLOFRIS/DataDrive — and the adaptation
-decisions must flow back.  This module prototypes exactly that seam against
-the validated FloodAdapt-ABM kernels, with **no honeybees/mesa dependency**,
-so the mapping can be verified bit-for-bit before the real environment lift
-(4b-full steps 1-2) is attempted.
+arrays.  Here the same arrays are **populated from the FloodAdapt lookup
+table** instead of from GLOFRIS/DataDrive, and the adaptation decisions flow
+back into the engine's state.  The module carries **no honeybees or mesa
+dependency**, so the mapping is verifiable on its own.
 
 Forward direction  (FloodAdapt -> DYNAMO-M):
     ``populate(slr_value)`` interpolates the engine's per-event damage
@@ -30,9 +26,8 @@ Reverse direction  (DYNAMO-M -> FloodAdapt):
 
 The bit-parity contract is executable via :func:`round_trip_check` and the
 tests in ``tests/test_coastal_node_adapter.py``: every array must survive the
-FloodAdapt -> node -> FloodAdapt round trip **bit-identically**, so that the
-eventual 4b-full ≡ 4b-scaffold gate stays attributable to the environment
-swap alone (one variable at a time, as in the 4a -> 4b progression).
+FloodAdapt -> node -> FloodAdapt round trip **bit-identically**, so the
+adapter cannot perturb the driver parity gates.
 """
 from __future__ import annotations
 
@@ -142,7 +137,7 @@ class LookupTableAdapter:
             p_floods=np.asarray(eng._event_freqs, dtype=np.float64).copy(),
             # Native encoding: 0 = nothing, 1 = floodproofed, 2 = insured
             # (insured is always all-False while include_insurance is off,
-            # so the legacy 0/1 encoding is preserved bit-exactly there).
+            # so the plain 0/1 encoding is preserved bit-exactly there).
             adapt=np.where(
                 state.is_insured, np.int8(2), state.is_adapted.astype(np.int8)
             ),
@@ -179,7 +174,7 @@ class LookupTableAdapter:
 def round_trip_check(engine: SimulationEngine, slr_value: float,
                      interp_method: str = "linear") -> dict:
     """
-    Executable bit-parity contract for the adapter (the PRE.4 gate).
+    Executable bit-parity contract for the adapter.
 
     Populates a node from the engine, then verifies every mapped array is
     **bit-identical** to its source, and that ``write_back`` restores a

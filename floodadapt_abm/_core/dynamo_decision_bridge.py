@@ -196,7 +196,7 @@ class DynamoDecisionBridge:
           annual rate ``freq_i``.  Always < 1, consistent with the
           exceedance-curve semantics of the trapezoidal EU integral (and
           with the yearly ``dt = 1`` step of the engine).
-        * ``"raw_freq"`` — legacy: the raw frequencies are used directly
+        * ``"raw_freq"`` — the raw frequencies are used directly
           (valid only while every frequency is well below 1).
 
         Returns
@@ -330,7 +330,7 @@ class DynamoDecisionBridge:
         See Tierolf et al. (2023) Section 2.2 for the scientific basis.
 
         .. note::
-           Legacy binary-only duplicate kept for the deprecated
+           Binary-only duplicate kept for the deprecated
            ``evaluate_decisions`` path.  The maintained implementation —
            including the severity-aware ``perception_mode`` — lives in
            :meth:`floodadapt_abm.simulation_engine.SimulationEngine.update_flood_experience`.
@@ -393,7 +393,7 @@ class DynamoDecisionBridge:
 
         # Exceedance probabilities of each event (sorted ascending for trapz).
         # Honours seu_prob_mode; identical to the raw frequencies under the
-        # legacy "raw_freq" mode.
+        # "raw_freq" mode.
         p_floods: np.ndarray = self.p_floods_seu.astype(np.float32)
 
         # Time horizon array (same for all agents here; extend later if needed)
@@ -609,7 +609,7 @@ class DynamoDecisionBridge:
         2. otherwise the ``income_mode`` fallback, which is always
            ``"synthetic_lognormal"`` (native DYNAMO-M port, income
            independent of building value).  The former ``"mpd_ratio"``
-           fallback was removed in 2026-08 because its affordability gate
+           fallback was removed because its affordability gate
            never bound for any household; it now raises.
         """
         self.income_percentile: np.ndarray | None = None
@@ -639,7 +639,7 @@ class DynamoDecisionBridge:
             )
         elif self._dec.income_mode == "mpd_ratio":
             raise ValueError(
-                "income_mode='mpd_ratio' was removed in 2026-08. It set "
+                "income_mode='mpd_ratio' was removed. It set "
                 "income = max_pot_dmg / income_to_wealth_ratio, so wealth "
                 "cancelled back to exactly the building value and both sides "
                 "of the affordability test became proportional to "

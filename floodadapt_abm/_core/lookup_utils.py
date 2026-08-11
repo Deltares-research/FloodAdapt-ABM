@@ -149,7 +149,7 @@ def _linear_at_slr(
 
     Why this is hand-rolled rather than delegated to SciPy: the damage cube is
     ``float32`` while the SLR grid is ``float64``, so the result depends on
-    *where* SciPy's legacy ``interp1d`` promotes.  That promotion is an
+    *where* SciPy's ``interp1d`` promotes.  That promotion is an
     implementation detail of a deprecated API and is not guaranteed stable
     across SciPy builds or NumPy promotion regimes (NEP 50).  Interpolated
     damages routinely land within one ``float32`` unit in the last place of a

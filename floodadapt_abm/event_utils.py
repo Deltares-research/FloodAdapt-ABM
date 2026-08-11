@@ -15,13 +15,13 @@ Two draw modes are provided (selected via
     alike — equals its nominal frequency, and one event may occur several
     times within a year.
 
-``"bernoulli_clip"`` (legacy)
+``"bernoulli_clip"`` (alternative)
     One Bernoulli trial per event with ``p = min(freq_i * dt, 1)``.
     Frequencies above ``1/dt`` are clipped to certainty, so sub-annual
     events occur every single year and — combined with the
     ``max_events_per_year`` cap — crowd out the rare extremes.  Kept as an
-    ordinary option (its RNG call order is frozen) so the Poisson draw can be
-    compared against it; do not use it for a real study.
+    ordinary option (its RNG call order is frozen) so the Poisson draw can
+    be compared against it; do not use it for a real study.
 
 Cap policies
 ------------
@@ -32,7 +32,7 @@ according to ``cap_policy``:
   ``event_severity``).  Deterministic: no extra RNG draw, so sequential
   and parallel runs remain bit-identical, and extremes are never discarded
   in favour of nuisance events.
-* ``"random"`` — legacy: uniform random selection without replacement.
+* ``"random"`` — uniform random selection without replacement.
   Preserves the magnitude distribution *conditional on the drawn pool*
   but biases the marginal occurrence rate of every event downwards.
 
@@ -117,9 +117,9 @@ def draw_year_events(
         )
 
     if mode == "bernoulli_clip":
-        # PRE-REVIEW branch — byte-identical RNG call order (rng.random ->
-        # rng.choice -> np.sort).  Keep the stream frozen: notebook 2 relies on
-        # it to give R2 and R3 bit-identical flood histories, which is what
+        # Frozen RNG call order (rng.random -> rng.choice -> np.sort).  Keep
+        # the stream as it is: notebook 2 relies on it to give the two
+        # matched-hazard runs bit-identical flood histories, which is what
         # makes that comparison a controlled one.
         probs = np.clip(freqs * dt, 0.0, 1.0)
         occurred_mask = rng.random(probs.shape[0]) < probs

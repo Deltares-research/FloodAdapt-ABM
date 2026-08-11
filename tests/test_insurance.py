@@ -31,7 +31,7 @@ SEED = 123
 
 
 def _insurance_cfg(**overrides) -> CouplingConfig:
-    """Insurance-enabled config on otherwise-legacy behaviour modes."""
+    """Insurance-enabled config on the alternative behaviour modes."""
     cfg = historical_modes_config()
     cfg.decision.include_insurance = True
     # Synthetic incomes so the premium affordability gate is meaningful.

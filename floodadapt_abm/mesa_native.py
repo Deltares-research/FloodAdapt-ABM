@@ -1,17 +1,18 @@
 """
 mesa_native.py
 ==============
-Phase 4b of the FloodAdapt-ABM x DYNAMO-M coupling: **Mesa-native driving**.
+**Mesa-native driving**: a framework-free mirror of the native DYNAMO-M
+``SLRModel.step()`` tick loop.
 
-.. note:: **Role: verification mirror (experiment/verification path).**
-   This framework-free driver is retained as the Phase-4b bit-parity gate
-   for the main engine.  Applications should use
+.. note:: **Role: verification path.**
+   This driver exists as a bit-parity gate for the main engine.
+   Applications should use
    :func:`~floodadapt_abm.mesa_native_full.run_mesa_native_full` (the real
    honeybees ``Model`` clock) instead.
 
-Where Phase 3 / 4a let :class:`~floodadapt_abm.simulation_engine.SimulationEngine`
-own the year loop (``engine.run()`` iterates the sequences and the years), Phase
-4b **inverts time ownership**: a small model object advances one tick at a time
+Where :class:`~floodadapt_abm.simulation_engine.SimulationEngine` owns the year
+loop (``engine.run()`` iterates the sequences and the years), this module
+**inverts time ownership**: a small model object advances one tick at a time
 via :meth:`FloodAdaptSLRModel.step`, mirroring how the native DYNAMO-M
 ``SLRModel.run_model()`` drives ticks with ``while True: self.step()``.
 
@@ -21,14 +22,14 @@ The upstream ``SLRModel`` subclasses ``honeybees.model.Model`` and its
 ``Agents`` constructor eagerly builds the full DYNAMO-M object graph (coastal /
 inland nodes, beaches, government + insurer agents, gravity models, GLOFRIS
 flood risk, geojson study areas, spin-up, pickling, low-memory scratch folders).
-Instantiating it requires the entire DYNAMO-M **data + geodata ecosystem** plus
-``honeybees`` / ``mesa`` — none of which need be present to *use* FloodAdapt-ABM.
-That full binding ("4b-full") is a documented follow-up: see the Phase-4b model
-documentation ``20260708_phase_4b_model_documentaiton_phase.docx`` (Sections 2 and
-8, incl. the effort/risk assessment for 4b-full) and ``docs/architecture.md``.
+Instantiating it requires the entire DYNAMO-M **data + geodata ecosystem**,
+none of which need be present to *use* FloodAdapt-ABM.  The real binding to the
+honeybees ``Model`` lives in
+:mod:`~floodadapt_abm.mesa_native_full`, which sidesteps that object graph by
+feeding the coastal-node population from the lookup table.
 
 What this module provides instead is a faithful, dependency-free **mirror of the
-native control flow** that reuses the already-validated FloodAdapt-ABM kernels:
+native control flow** that reuses the validated FloodAdapt-ABM kernels:
 
 ======================  ======================================================
 Native DYNAMO-M         FloodAdapt-ABM Mesa-native mirror (this module)
@@ -44,13 +45,14 @@ decision                shared :class:`~floodadapt_abm.decision_rule.DecisionRul
 
 Because both paths call the *same* :meth:`SimulationEngine.step` kernel with the
 *same* RNG stream, the Mesa-native driver reproduces ``engine.run()``
-**bit-for-bit** — that equivalence is the Phase-4b gate and the proof that the
-time-ownership inversion is non-breaking (see ``test_mesa_native.py`` and the
+**bit-for-bit**.  That equivalence is the gate proving the time-ownership
+inversion is non-breaking (see ``test_mesa_native.py`` and the
 ``examples_engine/06_mesa_native_driving.py`` demo).
 
-The seam that stays stable across 4a -> 4b is the ``DecisionRule.should_adapt``
-contract: in 4a it is called inside ``engine.run``; in 4b the very same call is
-made inside ``model.step`` — and ultimately, in 4b-full, inside the native
+The seam that stays stable across all three drivers is the
+``DecisionRule.decide`` contract: the engine calls it inside ``engine.run``,
+this module calls it inside ``model.step``, and
+:mod:`~floodadapt_abm.mesa_native_full` calls it inside the native
 ``honeybees`` ``model.step()``.
 """
 from __future__ import annotations
@@ -280,13 +282,13 @@ def run_mesa_native(
     track_eu: bool = False,
 ) -> dict:
     """
-    Run the simulation with **Mesa-native time driving** (Phase 4b).
+    Run the simulation with **Mesa-native time driving**.
 
     Drop-in analogue of :meth:`SimulationEngine.run`, but the year loop is owned
     by :class:`FloodAdaptSLRModel` ticks rather than by ``engine.run``.  Because
     both paths call the identical per-year kernel with the identical RNG stream,
     the returned arrays are **bit-for-bit identical** to ``engine.run(...)`` for
-    the same arguments — that equivalence is the Phase-4b gate.
+    the same arguments.  That equivalence is the module's parity gate.
 
     Parameters
     ----------

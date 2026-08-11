@@ -1,14 +1,12 @@
 """
 agent_state.py
 ==============
-Standardised per-agent state container for the unified ``SimulationEngine``
-(Phase 3 step-wise refactoring).
+Standardised per-agent state container for the ``SimulationEngine``.
 
-Before this refactor, ``ABMSimulator`` and ``DynamoDecisionBridge`` each kept
-their own loose set of per-agent arrays (``is_floodproofed`` vs ``is_adapted``,
-separate ``flood_timer`` / ``risk_perception`` handling, no shared
-``time_adapted``).  ``AgentState`` collapses these into one vectorised,
-NumPy-first container passed to every :class:`~floodadapt_abm.decision_rule.DecisionRule`.
+``AgentState`` is the single vectorised, NumPy-first container of per-agent
+arrays (``is_adapted``, ``flood_timer``, ``risk_perception``, ``time_adapted``,
+``last_flood_severity``, ``is_insured``) passed to every
+:class:`~floodadapt_abm.decision_rule.DecisionRule`.
 
 The container is deliberately a plain mutable dataclass of parallel arrays (all
 shape ``(n_agents,)``) rather than a per-agent object, to keep the hot decision

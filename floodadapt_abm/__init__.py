@@ -40,7 +40,7 @@ Symbol                      ``STATUS``      Role
                                             (floodproofing + insurance)
 ``SEURule``                 reference       Parity-gated NumPy port; fallback,
                                             and required for ``n_jobs>1``
-``ThresholdRule``           experiment      Legacy damage-threshold baseline
+``ThresholdRule``           experiment      Damage-threshold baseline
 ==========================  ==============  ==================================
 
 Drivers (which object owns the clock):
@@ -57,7 +57,7 @@ Symbol                          Status          Role
                                                 experiments and sweeps.
 ``run_mesa_native`` /           verification    Framework-free mirror of the
 ``FloodAdaptSLRModel``                          tick loop; bit-parity gate.
-``ABMSimulator``                deprecated      Legacy simulator, backward
+``ABMSimulator``                deprecated      Standalone simulator, backward
                                                 compatibility only.
 ==============================  ==============  ==============================
 
@@ -68,7 +68,7 @@ AgentState
     Per-agent state container for the engine.
 CouplingConfig / DecisionConfig / NetCDFMappingConfig
     Configuration dataclasses.  Every behaviour switch also accepts its
-    pre-2026-07 alternative (``"bernoulli_clip"``, ``"raw_freq"``,
+    alternative behaviour (``"bernoulli_clip"``, ``"raw_freq"``,
     ``"binary"``), kept as ordinary options for sensitivity work.
 
 Note on setup_lookup_table
@@ -124,7 +124,7 @@ from floodadapt_abm.dynamo_live_rule import (
     preferred_decision_rule,
 )
 
-# Phase 4b: Mesa-native driving (time-ownership inversion). Framework-free
+# Mesa-native driving (time-ownership inversion). Framework-free
 # mirror of DYNAMO-M's SLRModel.step() tick loop; reuses the shared kernels.
 from floodadapt_abm.mesa_native import (
     FloodAdaptSLRModel,
@@ -133,7 +133,7 @@ from floodadapt_abm.mesa_native import (
     run_mesa_native,
 )
 
-# MAIN ENGINE (Phase 4b-full, native-class integration): subclasses the real
+# MAIN ENGINE (native-class integration): subclasses the real
 # honeybees Model (owns time); decisions can route through the native DYNAMO-M
 # DecisionModule via DynamoLiveRule. honeybees is a core dependency; the import
 # guard is retained defensively (HONEYBEES_AVAILABLE False -> construction

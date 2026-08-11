@@ -1,8 +1,8 @@
 """
 mesa_native_full.py
 ===================
-Phase **4b-full** of the FloodAdapt-ABM x DYNAMO-M coupling: **native-class
-integration**.
+**Native-class integration**: the fully native coupling of FloodAdapt-ABM and
+DYNAMO-M.
 
 .. note:: **Role: MAIN engine.**  :func:`run_mesa_native_full` is the
    recommended entry point for running coupled simulations; ``honeybees``
@@ -11,30 +11,27 @@ integration**.
    (the framework-free mirror) are experiment/verification paths kept for
    the bit-parity gates.
 
-Where Phase 4b (``mesa_native.py``) mirrors the DYNAMO-M ``SLRModel`` tick loop
-with a *framework-free* Python object, Phase 4b-full binds the **real honeybees
-``Model``** as the time-owning base class and routes the per-year decision
-through the **native DYNAMO-M ``DecisionModule``** (via the already-validated
+Where :mod:`~floodadapt_abm.mesa_native` mirrors the DYNAMO-M ``SLRModel`` tick
+loop with a *framework-free* Python object, this module binds the **real
+honeybees ``Model``** as the time-owning base class and routes the per-year
+decision through the **native DYNAMO-M ``DecisionModule``** (via
 :class:`~floodadapt_abm.dynamo_live_rule.DynamoLiveRule`).  The coastal-node
-population is fed **entirely from the FloodAdapt lookup table** through the PRE.4
-:class:`~floodadapt_abm.coastal_node_adapter.LookupTableAdapter` — no GLOFRIS,
+population is fed **entirely from the FloodAdapt lookup table** through
+:class:`~floodadapt_abm.coastal_node_adapter.LookupTableAdapter`, so no GLOFRIS,
 gravity models, geojson study areas or low-memory paging are required.
 
-Why this is the 4b-full gate (and not the raw ``SLRModel``)
------------------------------------------------------------
+Why the lookup-table binding, and not the raw ``SLRModel``
+----------------------------------------------------------
 The upstream ``SLRModel``'s ``CoastalNode.step()`` is entangled with the full
 DYNAMO-M data ecosystem (water-level memmaps, population/GDP change, coastal
-amenities, GLOFRIS flood risk, gravity CWD).  Instantiating it therefore needs
-the entire geodata stack.  The **documented 4b-full gate**, however, is narrower
-and testable without that stack:
-
-    *"``SLRModel.step()`` drives the native ``CoastalNode`` population, bit-for-bit
-    ``4b-full ≡ 4b-scaffold`` on a deterministic node population."*
-
-This module delivers exactly that.  It reuses:
+amenities, GLOFRIS flood risk, gravity CWD), so instantiating it needs the
+entire geodata stack.  The property this module guarantees is narrower and
+testable without that stack: the honeybees ``Model`` drives a native
+``CoastalNode`` population, bit-for-bit identical to the other two drivers on a
+deterministic node population.  It reuses:
 
 ======================  ======================================================
-Native DYNAMO-M         FloodAdapt-ABM 4b-full binding (this module)
+Native DYNAMO-M         FloodAdapt-ABM native binding (this module)
 ======================  ======================================================
 ``honeybees.Model``     base class of :class:`FloodAdaptSLRModelFull` (owns time)
 ``SLRModel.run_model``  :meth:`FloodAdaptSLRModelFull.run_model`
@@ -53,8 +50,8 @@ the *same* :meth:`SimulationEngine.step` kernel with the *same* RNG stream as
 The lookup-table adapter is exercised **both directions** every tick (forward:
 lookup table -> node arrays; reverse: node decisions -> engine state) without
 perturbing the kernel, so ``run_mesa_native_full`` reproduces both
-``run_mesa_native`` and ``engine.run`` **bit-for-bit** — that triple equivalence
-is the 4b-full gate.
+``run_mesa_native`` and ``engine.run`` **bit-for-bit**.  That triple
+equivalence is the coupling's correctness contract.
 
 Dependency handling
 -------------------
@@ -110,8 +107,8 @@ def _load_honeybees_model():
     except Exception as exc:  # noqa: BLE001 - re-raise as a typed error
         raise HoneybeesNotAvailable(
             "honeybees is not importable in this environment; install honeybees "
-            "(and mesa) to use the Phase 4b-full native-class integration, or use "
-            "the framework-free FloodAdaptSLRModel (Phase 4b) instead."
+            "(and mesa) to use the native-class integration, or use "
+            "the framework-free FloodAdaptSLRModel instead."
         ) from exc
 
 
@@ -138,7 +135,7 @@ _ModelBase = _load_honeybees_model() if HONEYBEES_AVAILABLE else object
 
 class CoastalNodePopulationFull:
     """
-    Coastal-node population for the 4b-full driver — the native-class analogue of
+    Coastal-node population for this driver, the native-class analogue of
     :class:`~floodadapt_abm.mesa_native.CoastalNodePopulation`.
 
     Its :meth:`step` exercises the full coupling heartbeat each year:
@@ -201,7 +198,7 @@ class CoastalNodePopulationFull:
 
 class AgentsFull:
     """
-    Agent container for the 4b-full driver — mirror of DYNAMO-M's ``Agents``.
+    Agent container for this driver, mirroring DYNAMO-M's ``Agents``.
 
     The only agent group in the MVP is the coastal household population.
     """
@@ -218,7 +215,7 @@ class AgentsFull:
 class FloodAdaptSLRModelFull(_ModelBase):
     """
     Native-class, honeybees-driven Mesa model that **owns time** — the Phase
-    4b-full binding of DYNAMO-M's ``SLRModel``.
+    Native binding of DYNAMO-M's ``SLRModel``.
 
     Subclasses the **real** :class:`honeybees.model.Model`, so the clock
     (``current_time`` / ``current_timestep`` / ``end_time``) is provided by the
@@ -273,7 +270,7 @@ class FloodAdaptSLRModelFull(_ModelBase):
     ) -> None:
         if not HONEYBEES_AVAILABLE:
             raise HoneybeesNotAvailable(
-                "honeybees is required for FloodAdaptSLRModelFull (Phase 4b-full)."
+                "honeybees is required for FloodAdaptSLRModelFull."
             )
 
         self.slr_values = np.asarray(slr_values, dtype=float)
@@ -312,7 +309,7 @@ class FloodAdaptSLRModelFull(_ModelBase):
         self._rng = np.random.default_rng(seed)
 
         # Fresh per-agent state for this sequence; claim the new state epoch so
-        # any earlier model on the same engine becomes stale (PRE.3 guard).
+        # any earlier model on the same engine becomes stale (staleness guard).
         self.engine.reset_state()
         self._state_epoch = engine.state_epoch
 
@@ -357,7 +354,7 @@ class FloodAdaptSLRModelFull(_ModelBase):
     @timestep.setter
     def timestep(self, value: int) -> None:
         self.current_timestep = value
-    # -- staleness guard (PRE.3) -------------------------------------------
+    # -- staleness guard -----------------------------------------------------
     def _check_not_stale(self) -> None:
         """Raise if the engine's shared state was reset since construction."""
         if self.engine.state_epoch != self._state_epoch:
@@ -388,7 +385,7 @@ class FloodAdaptSLRModelFull(_ModelBase):
         the agents for the current year, then advance the honeybees clock.
 
         Overrides ``honeybees.model.Model.step`` (which also drives a reporter)
-        because Phase 4b-full owns its own lightweight per-year recording.
+        because this driver owns its own lightweight per-year recording.
         """
         self.agents.step()
         self.current_timestep += 1
@@ -412,8 +409,7 @@ def run_mesa_native_full(
     start_year: int = 2020,
 ) -> dict:
     """
-    Run the simulation with **native-class, honeybees-driven** time (Phase
-    4b-full).
+    Run the simulation with **native-class, honeybees-driven** time.
 
     Drop-in analogue of :meth:`SimulationEngine.run` and
     :func:`~floodadapt_abm.mesa_native.run_mesa_native`, but the year loop is
@@ -423,7 +419,7 @@ def run_mesa_native_full(
     per-year operation is delegated to the identical :meth:`SimulationEngine.step`
     kernel with the identical RNG stream, the returned arrays are **bit-for-bit
     identical** to ``engine.run(...)`` and ``run_mesa_native(...)`` for the same
-    arguments — that triple equivalence is the 4b-full gate.
+    arguments.  That triple equivalence is the coupling's correctness contract.
 
     Parameters
     ----------
@@ -458,7 +454,7 @@ def run_mesa_native_full(
     """
     if not HONEYBEES_AVAILABLE:
         raise HoneybeesNotAvailable(
-            "honeybees is required for run_mesa_native_full (Phase 4b-full)."
+            "honeybees is required for run_mesa_native_full."
         )
 
     slr_values = np.asarray(slr_values, dtype=float)

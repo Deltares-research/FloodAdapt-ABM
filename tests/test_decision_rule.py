@@ -1,16 +1,16 @@
 """
 test_decision_rule.py
 =====================
-Unit tests for the pluggable decision rules (Phase-3 Strategy Pattern):
-``ThresholdRule`` (legacy heuristic) and ``SEURule`` (validated DYNAMO-M SEU).
+Unit tests for the pluggable decision rules:
+``ThresholdRule`` (damage-threshold heuristic) and ``SEURule`` (DYNAMO-M SEU).
 
 The key correctness guarantees verified here are:
 
-* ``ThresholdRule`` reproduces the legacy ``ABMSimulator`` decision formula
+* ``ThresholdRule`` reproduces the ``ABMSimulator`` decision formula
   (adapt iff realised/max_pot_dmg > threshold, masked on non-adapted &
   max_pot_dmg > 0).
 * ``SEURule`` reproduces ``DynamoDecisionBridge.evaluate_decisions`` *exactly*
-  on a shared state — i.e. the refactor preserves the Phase-1-validated SEU
+  on a shared state, so both rules see the same validated SEU
   science bit-for-bit.
 """
 from __future__ import annotations
@@ -42,7 +42,7 @@ def _state_from_bridge(bridge: DynamoDecisionBridge) -> AgentState:
     )
 
 
-def test_threshold_rule_matches_legacy_formula(mock_ds):
+def test_threshold_rule_matches_abm_simulator_formula(mock_ds):
     """ThresholdRule reproduces the exact ABMSimulator masking + comparison."""
     bridge = DynamoDecisionBridge(ds=mock_ds)
     n = bridge.n_agents

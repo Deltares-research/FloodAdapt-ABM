@@ -1,7 +1,7 @@
 """
 08_income_perception_insurance.py
 =================================
-Tour of the post-review features: household **income percentiles**, the
+Tour of the behavioural extensions: household **income percentiles**, the
 **severity exponent** of flood risk perception, the **Poisson** event
 draw, and **insurance pricing** modes.
 
@@ -14,7 +14,7 @@ What you learn here
 * how ``perception_severity_exponent`` (gamma) shapes the
   risk-perception spike after a flood,
 * why the Poisson draw recovers every event's nominal occurrence rate
-  (the pre-review clip+cap draw does not),
+  (the bernoulli_clip draw with a cap does not),
 * what ``insurance_pricing="community"`` vs ``"risk_based"`` means for
   premiums and uptake.
 

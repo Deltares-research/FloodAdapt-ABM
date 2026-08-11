@@ -2,7 +2,7 @@
 test_perception.py
 ==================
 Tests for the magnitude-aware flood-perception update: severity-scaled
-risk-perception peaks, the flood-significance threshold, and exact legacy
+risk-perception peaks, the flood-significance threshold, and exact native
 equivalence of the binary mode.
 
 The severity response is a **single** one-parameter form, the power law
@@ -26,8 +26,8 @@ def _engine(perception_mode: str = "binary", **decision_overrides) -> Simulation
     return SimulationEngine(ds=make_mock_dataset(), config=cfg)
 
 
-def test_binary_mode_matches_legacy_formula():
-    """Binary mode: full-scale peak for any flooded agent (legacy/native)."""
+def test_binary_mode_uses_full_peak():
+    """Binary mode: full-scale peak for any flooded agent (native behaviour)."""
     engine = _engine("binary")
     dec = engine.config.decision
     flooded = np.zeros(engine.n_agents, dtype=bool)
@@ -61,7 +61,7 @@ def test_severity_scales_peak_with_power_law():
     engine.update_flood_experience(flooded, severity)
 
     rp = engine.state.risk_perception
-    # Total loss reproduces the full legacy peak exactly.
+    # Total loss gives the full risk_perc_max peak exactly.
     assert np.isclose(rp[0], dec.risk_perc_max + dec.risk_perc_min)
     # Concave scaling: 25 % damage -> sqrt(0.25) = 50 % of rp_max.
     assert np.isclose(rp[1], dec.risk_perc_max * 0.5 + dec.risk_perc_min)

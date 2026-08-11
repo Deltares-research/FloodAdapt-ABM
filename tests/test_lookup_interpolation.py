@@ -4,7 +4,7 @@ test_lookup_interpolation.py
 Portability gate for the SLR interpolation kernel.
 
 The damage cube is ``float32`` while the SLR grid is ``float64``.  The linear
-kernel used to delegate to SciPy's legacy ``interp1d``, which meant the result
+kernel must not delegate to SciPy's ``interp1d``, which would make the result
 depended on where SciPy promoted the mixed dtypes.  That promotion is an
 implementation detail of a deprecated API and is not stable across SciPy
 builds or NumPy promotion regimes (NEP 50).  Because interpolated damages

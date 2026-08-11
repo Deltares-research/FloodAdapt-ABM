@@ -18,9 +18,9 @@ def historical_modes_config(
     random_seed: int = 42, **decision_overrides
 ) -> CouplingConfig:
     """
-    Build a config with every behaviour switch on its pre-2026-07 alternative.
+    Build a config with every behaviour switch on its alternative setting.
 
-    The ``CouplingConfig.legacy()`` preset was retired in 2026-08 together
+    There is no preset bundling these; this fixture assembles them together
     with the golden regression it guarded, but the alternative algorithms
     themselves remain ordinary config options: the Bernoulli-clip draw, the
     raw-frequency SEU probabilities and the binary perception spike are all

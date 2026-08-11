@@ -26,8 +26,8 @@ Unified agent-based flood-adaptation simulation engine.
 
 *Behaviour* — whether each household adapts — is delegated to a pluggable
 :class:`~floodadapt_abm.decision_rule.DecisionRule` (``ThresholdRule`` for the
-legacy heuristic, ``SEURule`` for the DYNAMO-M science).  Switching rules is the
-only change required to move between the legacy 0.3-threshold behaviour and the
+threshold heuristic, ``SEURule`` for the DYNAMO-M science).  Switching rules is
+the only change required to move between the 0.3-threshold behaviour and the
 validated SEU decision engine.
 """
 from __future__ import annotations
@@ -239,13 +239,13 @@ class SimulationEngine:
 
         The post-flood ``peak`` depends on ``perception_mode``:
 
-        * ``"binary"`` (legacy/native): ``peak = risk_perc_max`` for every
+        * ``"binary"`` (native behaviour): ``peak = risk_perc_max`` for every
           flooded agent — a nuisance flood and a catastrophe are identical
           (native DYNAMO-M ``flood_risk.py:619`` behaves the same).
         * ``"severity"``: the peak scales with damage severity through the
           power law ``peak = risk_perc_max * s ** gamma`` (see
           :meth:`_severity_peak` and the ``DecisionConfig`` docstring).  A
-          total loss reproduces the full legacy spike; at the default
+          total loss gives the full ``risk_perc_max`` spike; at the default
           gamma = 0.5, 25 % damage gives 50 % of the max and 50 % damage
           gives ~71 %.  ``gamma`` spans concave (< 1), linear (= 1) and
           near-miss (> 1) responses.  A deliberate improvement beyond
@@ -272,7 +272,7 @@ class SimulationEngine:
             ).astype(np.float32)
             peak = self._severity_peak()
         elif self._dec.perception_mode == "binary":
-            # Legacy/native scalar peak (severity still recorded for
+            # Native scalar peak (severity still recorded for
             # diagnostics when available).
             if severity is not None:
                 self.state.last_flood_severity[flooded_agents] = np.clip(
@@ -340,7 +340,7 @@ class SimulationEngine:
                 old_param, gamma = retired
                 raise ValueError(
                     f"perception_severity_form={form!r} was removed in "
-                    "2026-08: its outcomes lie on the power-law curve, so it "
+                    "its outcomes lie on the power-law curve, so it "
                     "was a reparameterisation rather than a distinct "
                     f"hypothesis.  Replace it with "
                     f"perception_severity_form='power' and "
@@ -484,7 +484,7 @@ class SimulationEngine:
 
         # Per-event community gross damage at this year's SLR: the ranking key
         # for the deterministic "largest_damage" cap policy.  Only needed when
-        # a cap can bind; the legacy mode ignores it entirely.
+        # a cap can bind; the bernoulli_clip mode ignores it entirely.
         if (
             self._dec.max_events_per_year is not None
             and self._dec.cap_policy == "largest_damage"
@@ -497,7 +497,7 @@ class SimulationEngine:
         realised = self._realised_damage(occurred, damages_no_adapt, damages_adapt)
 
         # Damage severity per agent (fraction of max potential damage).
-        # ``was_flooded`` uses the significance threshold: with the legacy
+        # ``was_flooded`` uses the significance threshold: with the bare
         # threshold 0.0 this is exactly the historical ``realised > 0``
         # (agents with max_pot_dmg == 0 have realised == 0 after capping,
         # so both formulations agree); a positive threshold stops float
@@ -541,7 +541,7 @@ class SimulationEngine:
             premium_offer = None
 
         # Decision.  The rule receives the SEU exceedance probabilities
-        # (``p_floods_seu``: raw frequencies under the legacy "raw_freq" mode,
+        # (``p_floods_seu``: raw frequencies under the "raw_freq" mode,
         # ``1 - exp(-freq)`` under "exceedance") via the ``event_freqs``
         # parameter, whose name is kept for backward compatibility.
         actions = self.decision_rule.decide(

@@ -1,12 +1,12 @@
 """
 test_simulation_engine.py
 ========================
-Tests for the unified ``SimulationEngine`` (Phase 2 + Phase 3 refactor):
+Tests for the unified ``SimulationEngine``:
 
 * shapes / plumbing of ``step`` and ``run``,
-* the lifespan-dryproof reset (Phase-3 gap closure),
+* the lifespan-dryproof reset,
 * the degenerate ``risk_perception ≡ 0`` guarantee at engine level,
-* ``ThresholdRule`` irreversibility (legacy behaviour),
+* ``ThresholdRule`` irreversibility,
 * sequence independence via ``reset_state``.
 
 Bit-for-bit SEURule↔bridge parity is covered in ``test_decision_rule.py``;
@@ -92,7 +92,7 @@ def test_track_eu_populates_history(mock_ds):
 
 
 # ---------------------------------------------------------------------------
-# Lifespan-dryproof reset (Phase-3 gap closure)
+# Lifespan-dryproof reset
 # ---------------------------------------------------------------------------
 def test_lifespan_reset_expires_old_adaptation(mock_ds):
     cfg = CouplingConfig(decision=DecisionConfig(lifespan_dryproof=5))
@@ -156,7 +156,7 @@ def test_permanent_adaptation_without_lifespan(mock_ds):
 
 
 # ---------------------------------------------------------------------------
-# Degenerate & legacy guarantees
+# Degenerate-input guarantees
 # ---------------------------------------------------------------------------
 def test_degenerate_zero_risk_no_adoption(mock_ds_factory):
     """SEURule with risk_perception ≡ 0 ⇒ no adaptation over a full run (V1)."""
@@ -172,7 +172,7 @@ def test_degenerate_zero_risk_no_adoption(mock_ds_factory):
 def test_threshold_rule_adaptation_is_irreversible(mock_ds):
     """
     With ThresholdRule and no lifespan, once an agent adapts it stays adapted
-    (legacy irreversible behaviour) — adoption fraction is non-decreasing.
+    (irreversible behaviour) — adoption fraction is non-decreasing.
     """
     cfg = CouplingConfig(decision=DecisionConfig(lifespan_dryproof=None))
     eng = SimulationEngine(
@@ -258,7 +258,7 @@ def test_parallel_run_bit_identical_to_sequential(mock_ds_factory):
 
 
 def test_parallel_run_threshold_rule_bit_identical(mock_ds_factory):
-    """Parallel parity also holds for the legacy ThresholdRule."""
+    """Parallel parity also holds for ThresholdRule."""
     ds = mock_ds_factory(n_objects=40, seed=3)
     slr = np.linspace(0.0, 2.0, 6)
     cfg = CouplingConfig(decision=DecisionConfig(lifespan_dryproof=None))

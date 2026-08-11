@@ -1,13 +1,13 @@
 """
 test_mesa_native_full.py
 ========================
-Phase **4b-full** tests for the native-class integration
+Tests for the native-class integration
 (:mod:`floodadapt_abm.mesa_native_full`).
 
-Phase 4b-full binds the **real honeybees ``Model``** as the time-owning base
+This driver binds the **real honeybees ``Model``** as the time-owning base
 class and routes decisions through the native DYNAMO-M ``DecisionModule`` (via
 :class:`DynamoLiveRule`), feeding a deterministic coastal-node population from
-the FloodAdapt lookup table through the PRE.4 adapter.  The central gate is the
+the FloodAdapt lookup table through the adapter.  The central gate is the
 **triple bit-parity**::
 
     run_mesa_native_full == run_mesa_native == engine.run
@@ -55,7 +55,7 @@ def _engine(rule_factory=None, seed=42):
 
 
 # ---------------------------------------------------------------------------
-# The 4b-full gate: honeybees-driven == scaffold == engine.run, bit for bit.
+# The triple-parity gate: honeybees-driven == mirror == engine.run, bit for bit.
 # ---------------------------------------------------------------------------
 class TestTripleBitParity:
     @pytest.mark.parametrize("no_seq", [1, 3])
@@ -151,7 +151,7 @@ class TestObjectGraphAndAdapter:
 
     def test_adapter_round_trips_each_tick(self):
         # The population owns a LookupTableAdapter; a manual populate/write_back
-        # round trip must reproduce the live state exactly (PRE.4 contract).
+        # round trip must reproduce the live state exactly (adapter contract).
         engine = _engine()
         model = FloodAdaptSLRModelFull(engine, SLR, seed=1)
         adapter = model.agents.regions.adapter
@@ -162,7 +162,7 @@ class TestObjectGraphAndAdapter:
 
 
 # ---------------------------------------------------------------------------
-# PRE.3 shared-engine staleness guard also protects the honeybees driver.
+# The shared-engine staleness guard also protects the honeybees driver.
 # ---------------------------------------------------------------------------
 class TestSharedEngineStalenessGuard:
     def test_stale_model_step_raises(self):
@@ -184,7 +184,7 @@ class TestSharedEngineStalenessGuard:
 
 
 # ---------------------------------------------------------------------------
-# Native-class integration: the native DYNAMO-M DecisionModule drives 4b-full.
+# Native-class integration: the native DYNAMO-M DecisionModule drives the run.
 # ---------------------------------------------------------------------------
 @pytest.mark.skipif(not DYNAMO_M_AVAILABLE, reason="DYNAMO-M not importable")
 class TestNativeDecisionModuleUnderFull:

@@ -82,7 +82,7 @@ def test_p_floods_seu_exceedance_formula():
     assert abs(p[0] - freqs[0]) < 1e-4
 
 
-def test_p_floods_seu_raw_matches_legacy():
+def test_p_floods_seu_raw_matches_frequencies():
     freqs = np.array([0.01, 0.5, 1.0, 3.0])
     engine = SimulationEngine(
         ds=_ds_with_freqs(freqs), config=historical_modes_config()

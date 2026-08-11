@@ -1,19 +1,19 @@
 """
 abm_simulator.py
 ================
-.. deprecated:: Phase 3
-    ``ABMSimulator`` is the **legacy** pre-refactor threshold-rule simulator.
-    It is superseded by :class:`floodadapt_abm.simulation_engine.SimulationEngine`
+.. deprecated:: 0.1.0
+    ``ABMSimulator`` is the standalone threshold-rule simulator.  It is
+    superseded by :class:`floodadapt_abm.simulation_engine.SimulationEngine`
     with a pluggable :class:`~floodadapt_abm.decision_rule.DecisionRule`
-    (use ``ThresholdRule`` to reproduce this class's 0.3-threshold behaviour, or
-    ``SEURule`` for the DYNAMO-M science).
+    (use ``ThresholdRule`` to reproduce this class's 0.3-threshold behaviour,
+    or ``SEURule`` for the DYNAMO-M science).
 
-    It is intentionally **kept importable** (not moved into ``_core/``) because it
-    is still a public/legacy API actively referenced by:
+    It is intentionally **kept importable** (not moved into ``_core/``)
+    because it remains a public API referenced by:
 
-    * ``notebooks/archive/2_simulate_adaptation.ipynb`` (the legacy stage-2 notebook), and
-    * the Gate-1 regression test, which asserts that ``ThresholdRule`` reproduces
-      this class's damage/adaptation formula bit-for-bit.
+    * ``notebooks/archive/2_simulate_adaptation.ipynb``, and
+    * the regression test asserting that ``ThresholdRule`` reproduces this
+      class's damage/adaptation formula bit-for-bit.
 
     New code should use ``SimulationEngine``.  See the numbered examples in
     ``examples_engine/`` (start with ``01_quickstart.py``).
@@ -27,12 +27,12 @@ from floodadapt_abm._core.lookup_utils import (
 
 
 class ABMSimulator:
-    """Legacy threshold-rule ABM simulator (deprecated; see module docstring)."""
+    """Threshold-rule ABM simulator (deprecated; see module docstring)."""
 
     def __init__(self, ds_impacts, times, slr_values, no_seq, damage_threshold=0.3, seed=42, dmg_unit="$", slr_unit="feet", damage_dtype=np.int32):
         warnings.warn(
             "ABMSimulator is deprecated and retained only for backward "
-            "compatibility (legacy notebook + Gate-1 regression test). Use "
+            "compatibility (archived notebook + regression test). Use "
             "floodadapt_abm.SimulationEngine with a DecisionRule "
             "(ThresholdRule reproduces the 0.3-threshold behaviour; SEURule for "
             "the DYNAMO-M SEU science).",
