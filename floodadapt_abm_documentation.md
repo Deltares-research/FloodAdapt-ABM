@@ -41,6 +41,8 @@ the full `pytest` suite pass; run `pytest tests/ -q` for the current count.
 14. [Standalone simulator — `abm_simulator.py`](#14-standalone-simulator--abm_simulatorpy)
 15. [Examples, tests & verification](#15-examples-tests--verification)
 16. [Global assumptions & invariants](#16-global-assumptions--invariants)
+17. [Post-processing — `analysis.py`](#17-post-processing--analysispy)
+18. [Figures — `plotting.py`](#18-figures--plottingpy)
 
 ---
 
@@ -488,7 +490,8 @@ The recommended entry point; owns time, data, event generation, the lifespan res
 a pluggable `DecisionRule`. Wraps a `DynamoDecisionBridge` for the damage plumbing.
 
 `SimulationEngine(ds, decision_rule=None, config=None, income_per_agent=None,
-amenity_value_per_agent=None, damage_dtype=np.float32)`.
+amenity_value_per_agent=None, damage_dtype=np.float32, wealth_per_agent=None,
+income_percentile_per_agent=None)`.
 
 | Method | Purpose |
 |---|---|
@@ -499,6 +502,15 @@ amenity_value_per_agent=None, damage_dtype=np.float32)`.
 | `reset_state()` | reset per-agent state for a fresh sequence (bumps `state_epoch`) |
 | `run(slr_values, no_seq=1, seed=None, interp_method='linear', track_eu=False, n_jobs=1)` | run `no_seq` Monte-Carlo sequences; `n_jobs>1` parallelises across a thread pool of engine clones sharing a pre-warmed read-only cache |
 | `is_residential` (property) | boolean mask (all `True` — engine already operates on residential agents) |
+| `income` (property) | per-agent annual income, `(n_agents,)` float32 (explicit input or the synthetic lognormal port) |
+| `expected_annual_damages(use_adapted_strategy=False)` | per-agent EAD at the SLR last passed to `prepare_damages` |
+| `clear_cache()` | free the memoised per-SLR interpolation results (~90 MB per SLR value on the real table); call it between runs in long notebooks or batch scripts |
+
+The results dict of `run()` (and of both native drivers) holds `damage_history`
+(gross), `adapted_history`, `adoption_fraction`, optionally the EU histories,
+and the insurance arrays listed in the Appendix. `adoption_fraction` is the
+per-year **stock** (`adapted_history.mean(axis=1)`); the cumulative
+ever-adopted share is derived with `analysis.cumulative_uptake` (§17).
 
 **Performance contract (committed, bit-identical):**
 - *Per-SLR interpolation cache* — each strategy cube is materialised once and
@@ -707,14 +719,19 @@ dmg_unit='$', slr_unit='feet', damage_dtype=np.int32)`. Notable methods:
 ## 15. Examples, tests & verification
 
 ```
-examples_engine/         numbered runnable learning path (01 … 07) + README
+examples_engine/         numbered runnable learning path (01 … 08) + README
   01_...                  engine basics
   ...
   06_mesa_native_driving.py    verification-mirror demo
   07_mesa_native_full.py       preferred-path demo (+ inline bit-parity)
-tests/                   full pytest suite (219 tests; self-contained mock datasets)
+  08_income_perception_insurance.py  incomes, severity exponent, Poisson, insurance
+tests/                   full pytest suite (290 tests; self-contained mock datasets)
   test_mesa_native_full.py     22 tests: triple bit-parity, honeybees clock,
                                object graph/adapter, staleness guard, native path
+  test_analysis.py             stock vs cumulative uptake, damage/cost aggregates,
+                               summary tables, affordability diagnostics
+  test_plotting.py             every figure returns a Figure (Agg backend), the
+                               ever/current uptake pair, axes contract, no plt.show
 verification/            vendored, portable batteries emitting md/JSON/figures
   phase1_seu_battery/          V1–V6 SEU validation
   phase4a_parity/              ported vs native EU parity
@@ -728,7 +745,7 @@ Run everything (set `DYNAMO_M_PATH` to enable the native-parity tests):
 
 ```powershell
 $env:DYNAMO_M_PATH = "c:\repos\DYNAMO-M\DYNAMO-M"
-pytest -q            # 219 passed
+pytest -q            # 290 passed
 ```
 
 Guarded tests skip cleanly when honeybees or DYNAMO-M is unavailable.
@@ -767,6 +784,92 @@ mathematics and the diagrams, see
 
 ---
 
+## 17. Post-processing — `analysis.py`
+
+Pure NumPy/pandas functions over the results dict returned by
+`SimulationEngine.run`, `run_mesa_native` and `run_mesa_native_full`.  Nothing
+here touches the engine, the RNG streams or the arrays in place.  All
+functions are re-exported from the package root (`from floodadapt_abm import
+cumulative_uptake, ...`) and the module as `floodadapt_abm.analysis`.
+
+**Stock versus cumulative uptake.** `adoption_fraction` and `insured_fraction`
+are per-year stocks (`history.mean(axis=1)`).  Floodproofing persists until the
+lifespan reset, so over a shorter horizon its stock only rises; insurance is
+re-decided every year, so its stock rises and falls.  `cumulative_uptake` gives
+the share that has held the status at least once by year `t`: monotone
+non-decreasing and never below the stock.
+
+`history` arguments are boolean `(no_seq, n_agents, n_years)` arrays;
+per-year outputs are `(no_seq, n_years)` `float64`; money is in units of
+`scale` (`1e6` = millions, labelled with `money_unit(scale)`).
+
+| Function | Returns |
+|---|---|
+| `current_uptake(history)` | per-year stock; identical to `adoption_fraction` / `insured_fraction` |
+| `cumulative_uptake(history)` | share that has ever held the status by year `t` |
+| `count_history(history)` | number of agents holding the status per year (`int64`) |
+| `uptake_statistics(history)` | `{"final_current", "final_cumulative", "peak_current"}`, sequence means |
+| `damage_per_year(damage_history, scale=1e6)` | gross damage summed over agents |
+| `cumulative_damage(damage_history, scale=1e6)` | running total of the above |
+| `avoided_damage_per_year(damage_history, baseline_damage_history, scale=1e6, clip=True)` | per-agent `baseline − run`, clipped at 0 by default, summed over agents; the baseline must share the event draws |
+| `cumulative_avoided_damage(...)` | running total of the above |
+| `household_cost_per_year(results, scale=1e6)` | `out_of_pocket + premium_paid` summed over agents; `KeyError` with a directed message without insurance |
+| `cumulative_household_cost(results, scale=1e6)` | running total of the above |
+| `mean_and_std(per_seq)` | mean and population s.d. across the sequence axis |
+| `create_summary_table(results, baseline_results=None, scale=1e6)` | per-sequence rows plus `MEAN`/`STD`: `final floodproofed (#)`, `final floodproofed (%)` (stock), `ever floodproofed (%)`, `cum. damage`, optional `cum. avoided`, and with insurance `final/ever/peak insured (%)`, `premium final year ($)`, `cum. household cost` |
+| `scenario_summary(scenarios, reference=None, baselines=None, scale=1e6)` | one row per scenario (sequence means) with the same metrics, `cum. avoided` against each scenario's own baseline and `cum. avoided vs reference` (negative = more damage than the reference) |
+| `has_insurance(results)` | whether the insurance arrays are present |
+| `premium_offers(ead, deductible)` | per-household premiums under both rating rules, mirroring the engine (community = full mean EAD; risk-based = `(1 − deductible) · EAD_i`) |
+| `ead_summary(ead)` | `mean`, `median`, `p99`, `share_zero` of the risk pool |
+| `affordability_table(ead, income, expenditure_cap, deductible, high_risk_quantile=0.9)` | median premium and affordable shares (all households, high-risk tail) per rating rule; affordable means premium `< expenditure_cap · income` |
+| `affordability_vs_subsidy(ead, income, expenditure_cap, deductible, subsidies, high_risk_quantile=0.9)` | affordable share of the tail per subsidy depth and rating rule (monotone in the subsidy) |
+
+```python
+from floodadapt_abm import analysis
+ever = analysis.cumulative_uptake(results["insured_history"])     # (no_seq, n_years)
+table = analysis.create_summary_table(results, baseline_results)  # DataFrame
+```
+
+---
+
+## 18. Figures — `plotting.py`
+
+Matplotlib figures over the same results dicts.  Import the submodule
+explicitly (`from floodadapt_abm import plotting`); the package root does not
+import pyplot.  Every function draws into caller-supplied axes when given,
+otherwise creates a figure, returns the `Figure` and never calls `plt.show()`
+or selects a backend, so the same code serves notebooks, headless batch runs
+and tests.  Figure functions accept `save_path=` (saved at 150 dpi, tight
+bounding box).
+
+Insurance figures show the cumulative "ever insured" share and the per-year
+"currently insured" stock in **separate panels**, one line per scenario.
+Floodproofing panels draw one line per run and add the stock as a thin dotted
+line only where it differs from the cumulative share (a lifespan expiry), so a
+coinciding pair is never duplicated in the legend.  Multi-scenario figures
+take `styles: dict[label, (color, linestyle)]`; the convention is one colour
+per scenario and the line style for the rating rule (solid community, dashed
+risk-based), with the reference run in `reference_color` (black).  Missing
+labels get the default colour cycle.
+
+| Function | Draws |
+|---|---|
+| `overlay_slr(ax, years, slr_values)` | the SLR trajectory on a twin right axis (labelled `SLR_TWIN_LABEL`) |
+| `plot_band(ax, years, per_seq, color, label, show_sequences=True, clip_zero=True)` | thin per-sequence lines, bold mean, ±1 s.d. band |
+| `plot_uptake(ax, years, history, color, label, linestyle="-", which="auto", as_percent=True)` | one status over time: `which="ever"` or `"current"` alone (bare label), `"both"` (cumulative main line + thin dotted stock, labels suffixed `(ever)` / `(current)`), `"auto"` = both only where they differ |
+| `plot_adaptation_overview(years, slr_values, results, baseline_results, ...)` | four panels: households floodproofed per year (band; the ever-floodproofed mean is added only where it differs), total damage, avoided damage, cumulative avoided damage; SLR twin axis on each |
+| `plot_rule_hazard_comparison(years, runs, baseline_damage, styles=None, ...)` | three panels comparing runs: floodproofing (one line per run), damage per year, cumulative avoided damage against each run's own baseline |
+| `plot_insurance_overview(years, scenarios, reference, cap_budget, styles=None, reference_label="R1", reference_color="k", ...)` | six panels (2 × 3): ever insured, currently insured, floodproofing (crowding-out check against the reference), mean offered premium vs the affordability budget, household cost per year vs the reference's gross damage, cumulative household cost |
+| `plot_subsidy_experiment(years, scenarios, reference, styles=None, reference_label="R1", reference_color="k", cap_budget=None, ...)` | six panels (2 × 3): ever insured, currently insured, floodproofing, mean offered premium (budget line when `cap_budget` is given), cumulative avoided damage vs the reference (negative = more damage), cumulative household cost vs the reference's cumulative gross damage |
+| `plot_affordability_curve(subsidies, shares, ax=None, styles=None, ...)` | affordable share of the high-risk tail vs subsidy depth (`analysis.affordability_vs_subsidy` output) |
+
+```python
+from floodadapt_abm import plotting
+fig = plotting.plot_adaptation_overview(years, slr, results, baseline, save_path="r1.png")
+```
+
+---
+
 ## Appendix: three-way decisions, insurance and income utilities
 
 Design rationale for everything below: `docs/architecture.md` (the hazard-draw
@@ -793,11 +896,18 @@ The `event_freqs` parameter receives the engine's `p_floods_seu` (converted per
 | `out_of_pocket_history` | same, damage dtype | damages after the deductible for insured agents |
 | `premium_history` | `(no_seq, n_years)` | **mean** premium offered that year (equals the flat rate under community pricing) |
 | `premium_paid_history` | `(no_seq, n_agents, n_years)` | premium actually paid per household (0 when uninsured) |
-| `insured_fraction` | `(no_seq, n_years)` | share of households insured |
+| `insured_fraction` | `(no_seq, n_years)` | share of households insured **that year** (the per-year stock) |
 
 `damage_history` always stays **gross**.  Coverage timing: a policy decided in
 year *t* covers year *t+1*; year 0 starts uninsured.  Insurance is annual and
 never coexists with physical floodproofing.
+
+Because the status is re-decided every year, `insured_fraction` rises and
+falls with premiums and affordability, whereas `adoption_fraction` persists
+until the lifespan reset.  The comparable view for both is the cumulative
+share that has ever held the status, `analysis.cumulative_uptake(history)`
+(§17); the insurance figures show the two in separate panels, and the summary
+tables report both.
 
 Premiums are re-derived every year from the expected annual damage at that
 year's SLR (`SimulationEngine._compute_premium_offer`).  Note the native

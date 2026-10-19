@@ -115,6 +115,9 @@ classDiagram
         +prepare_damages(slr)
         +step(year, slr, rng)
         +run(slr_values, no_seq, n_jobs) dict
+        +income ndarray
+        +expected_annual_damages() ndarray
+        +clear_cache()
         -_clone_for_worker() SimulationEngine
     }
 
@@ -203,6 +206,8 @@ classDiagram
 | `event_utils.py` | The unified stochastic event draw |
 | `coupling_config.py` | Configuration dataclasses |
 | `income_utils.py` | Case-study income-percentile helpers |
+| `analysis.py` | Post-processing of the results dict: cumulative vs current uptake, damage and cost aggregates, summary tables, insurance affordability diagnostics (pure NumPy/pandas, no engine access) |
+| `plotting.py` | Matplotlib figures over the results dict; returns `Figure` objects, never shows or selects a backend |
 | `mesa_native_full.py` | The preferred driver: a real honeybees `Model` owns the clock |
 | `mesa_native.py` | Framework-free mirror of the tick loop (verification) |
 | `coastal_node_adapter.py` | Lookup table to `CoastalNode` array adapter |
@@ -382,7 +387,7 @@ optimisations carry the runtime:
    SLR axis only, and memoised per `(SLR, method)` in the bridge, so repeated
    years at the same sea level are free. The cache costs roughly 90 MB per SLR
    value, so long trajectories with many engine instances must call
-   `clear_interp_cache()` between runs or they will exhaust memory.
+   `engine.clear_cache()` between runs or they will exhaust memory.
 2. **Parallel Monte-Carlo sequences.** `run(n_jobs=N)` distributes sequences
    over a thread pool of `_clone_for_worker` engines sharing a pre-warmed,
    read-only interpolation cache. Output is bit-identical to `n_jobs=1` for
@@ -515,7 +520,12 @@ agent.
 
 **Observation.** Per year and per sequence the model records damages, adoption,
 insured fraction, out-of-pocket costs, premiums offered and paid, and
-optionally the expected utilities behind each decision.
+optionally the expected utilities behind each decision. `adoption_fraction`
+and `insured_fraction` are per-year stocks; because floodproofing persists
+until the lifespan reset while insurance is re-decided every year, the
+comparable measure of uptake is the cumulative share that has ever taken the
+action (`analysis.cumulative_uptake`), which the insurance figures show in a
+panel beside the stock.
 
 ## 9. Details
 

@@ -876,3 +876,44 @@ class SimulationEngine:
         ``is_residential`` engine-state field and for downstream filtering.
         """
         return np.ones(self.n_agents, dtype=bool)
+
+    @property
+    def income(self) -> np.ndarray:
+        """
+        Annual income per agent, shape ``(n_agents,)``, ``float32``.
+
+        Read-only view of the data layer's income array (explicit input or
+        the synthetic lognormal port); used by the affordability
+        diagnostics in :mod:`floodadapt_abm.analysis`.
+        """
+        return self._data.income
+
+    def expected_annual_damages(
+        self, use_adapted_strategy: bool = False
+    ) -> np.ndarray:
+        """
+        Expected annual damage per agent at the SLR last passed to
+        :meth:`prepare_damages`.
+
+        Parameters
+        ----------
+        use_adapted_strategy : bool
+            ``True`` integrates the floodproof damage matrix, ``False`` the
+            no-measures one.  Default ``False``.
+
+        Returns
+        -------
+        np.ndarray[float32]
+            Shape ``(n_agents,)``, in the table's damage unit.
+        """
+        return self._data.compute_expected_annual_damages(use_adapted_strategy)
+
+    def clear_cache(self) -> None:
+        """
+        Free the memoised per-SLR interpolation results.
+
+        Each distinct SLR value interpolated holds both strategy matrices
+        in memory (about 90 MB per value on the real Charleston table), so
+        call this between runs of a long notebook or batch script.
+        """
+        self._data.clear_interp_cache()

@@ -147,6 +147,26 @@ from floodadapt_abm.mesa_native_full import (
     HONEYBEES_AVAILABLE,
 )
 
+# Post-processing of the results dict: pure NumPy/pandas (no engine access).
+# The matplotlib figures live in ``floodadapt_abm.plotting``; import that
+# submodule explicitly so importing the package never imports pyplot.
+from floodadapt_abm import analysis
+from floodadapt_abm.analysis import (
+    affordability_table,
+    affordability_vs_subsidy,
+    avoided_damage_per_year,
+    create_summary_table,
+    cumulative_avoided_damage,
+    cumulative_damage,
+    cumulative_household_cost,
+    cumulative_uptake,
+    current_uptake,
+    damage_per_year,
+    household_cost_per_year,
+    scenario_summary,
+    uptake_statistics,
+)
+
 __all__ = [
     "SimulationEngine",
     "ABMSimulator",
@@ -182,5 +202,19 @@ __all__ = [
     "draw_year_events",
     "generate_event_sequences",
     "DynamoDecisionBridge",  # backward compat
+    "analysis",
+    "affordability_table",
+    "affordability_vs_subsidy",
+    "avoided_damage_per_year",
+    "create_summary_table",
+    "cumulative_avoided_damage",
+    "cumulative_damage",
+    "cumulative_household_cost",
+    "cumulative_uptake",
+    "current_uptake",
+    "damage_per_year",
+    "household_cost_per_year",
+    "scenario_summary",
+    "uptake_statistics",
 ]
 

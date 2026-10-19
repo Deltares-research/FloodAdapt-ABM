@@ -95,7 +95,7 @@ falls back to the synthetic table if it is not found. Expect multi-minute
 runtimes on the full table — pass `n_jobs=-1` to `engine.run(...)` to parallelize
 the Monte-Carlo sequences (bit-identical), and reuse a single `engine` across
 runs so its per-SLR interpolation cache stays warm (the cache is released when the
-engine is discarded, or via `engine._data.clear_interp_cache()`). On the real
+engine is discarded, or via `engine.clear_cache()`). On the real
 table these cut per-tick interpolation from ~5.5 s to ~1 s (first cube
 materialize ~24 s → ~3.6 s) and give ~1.4× from parallel sequences.
 

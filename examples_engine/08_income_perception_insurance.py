@@ -31,7 +31,7 @@ from __future__ import annotations
 import numpy as np
 
 import _shared
-from floodadapt_abm import CouplingConfig, SimulationEngine
+from floodadapt_abm import CouplingConfig, SimulationEngine, cumulative_uptake
 from floodadapt_abm.event_utils import draw_year_events
 from floodadapt_abm.income_utils import (
     percentiles_from_income_values,
@@ -156,10 +156,10 @@ def _poisson_rate_recovery() -> None:
         return hits / n_years
 
     poisson = realised_rate("poisson", None)
-    pre_review = realised_rate("bernoulli_clip", 4)
+    clipped = realised_rate("bernoulli_clip", 4)
     print(f"  nominal rate of the extreme        : 0.0100 events/year")
     print(f"  realised, poisson (no cap)         : {poisson:.4f}  (matches)")
-    print(f"  realised, clip + cap of 4          : {pre_review:.4f}  (extreme mostly discarded)")
+    print(f"  realised, clip + cap of 4          : {clipped:.4f}  (extreme mostly discarded)")
 
 
 def _insurance_pricing(ds) -> None:
@@ -176,11 +176,15 @@ def _insurance_pricing(ds) -> None:
         cfg.decision.insurance_subsidy = subsidy
         engine = SimulationEngine(ds=ds, config=cfg)
         res = engine.run(SLR, no_seq=3, seed=SEED)
+        # ``insured_fraction`` is the per-year stock (insurance is re-decided
+        # every year); ``cumulative_uptake`` is the share that ever insured.
         uptake = res["insured_fraction"].mean(axis=0)
+        ever = cumulative_uptake(res["insured_history"]).mean(axis=0)
         premium = res["premium_history"].mean(axis=0)
         label = pricing if subsidy == 0.0 else f"{pricing} + {subsidy:.0%} subsidy"
         print(f"  {label:<26}: premium y1 ${premium[0]:>7,.0f} -> yN ${premium[-1]:>7,.0f}"
-              f" | uptake peak {uptake.max():.1%} final {uptake[-1]:.1%}")
+              f" | insured peak {uptake.max():.1%} final {uptake[-1]:.1%}"
+              f" | ever insured {ever[-1]:.1%}")
     print("  community: one flat premium = mean expected annual damage (native);")
     print("  risk_based: each household pays its own expected payout; the subsidy")
     print("  is the share of the premium paid by a public scheme (the household")
