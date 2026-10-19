@@ -87,7 +87,7 @@ python 01_quickstart.py
 ## The two-stage pipeline
 
 1. **Build the lookup table** — [notebooks/1_create_lookup_table.ipynb](notebooks/1_create_lookup_table.ipynb) runs FloodAdapt (SFINCS + FIAT) over every `event × SLR × strategy` combination and saves `lookup_table_<site>_<event_set>.nc` (dims `object_id × slr × strategy × event`).
-2. **Simulate adaptation** — [notebooks/2_run_coupled_abm.ipynb](notebooks/2_run_coupled_abm.ipynb) (or the API above) draws Monte-Carlo event sequences, interpolates damages along the SLR axis, and applies the pluggable household decision rule each year.
+2. **Simulate adaptation** — [notebooks/2_coupled_abm_walkthrough.ipynb](notebooks/2_coupled_abm_walkthrough.ipynb) for the main steps, [notebooks/3_coupled_abm_full_analysis.ipynb](notebooks/3_coupled_abm_full_analysis.ipynb) for every scenario (or the API above). Both draw Monte-Carlo event sequences, interpolates damages along the SLR axis, and applies the pluggable household decision rule each year.
 
 The `.nc` lookup table is the **only** interface between the stages — keep it stable.
 
@@ -147,6 +147,7 @@ Two core documents with distinct roles, plus one method guide:
 Reading order for newcomers:
 
 1. **This README**: overview, installation, quick start.
-2. [notebooks/2_run_coupled_abm.ipynb](notebooks/2_run_coupled_abm.ipynb): the R1 DYNAMO ABM run walkthrough, including the household-income workflow and the insurance scenarios.
-3. [examples_engine/README.md](examples_engine/README.md): the numbered learning path (01 to 08; 08 tours the income, perception and insurance features).
-4. The three documents above, in the order of your question.
+2. [notebooks/2_coupled_abm_walkthrough.ipynb](notebooks/2_coupled_abm_walkthrough.ipynb): the short entry point. Agents, decisions, a uniform rule against the coupled model, two insurance policies and the subsidy runs, all on the Poisson hazard.
+3. [notebooks/3_coupled_abm_full_analysis.ipynb](notebooks/3_coupled_abm_full_analysis.ipynb): the complete run set (R1 to R8), including the clipped-hazard comparison, all income tiers, the verification paths and the background appendices.
+4. [examples_engine/README.md](examples_engine/README.md): the numbered learning path (01 to 08; 08 tours the income, perception and insurance features).
+5. The three documents above, in the order of your question.

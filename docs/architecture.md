@@ -1214,9 +1214,13 @@ drift from the implementation:
 - `examples_engine/08_income_perception_insurance.py` walks the income
   percentiles, the severity-exponent sweep, Poisson rate recovery, and the
   insurance pricing modes side by side.
-- `notebooks/2_run_coupled_abm.ipynb` runs the full scenario set on the real
-  Charleston table, including the matched-hazard comparison and the
-  insurance experiment.
+- `notebooks/2_coupled_abm_walkthrough.ipynb` walks the main steps on the
+  real Charleston table: the agents, the decision, a uniform threshold rule
+  against the coupled model, both insurance pricing rules and the subsidy
+  runs, all on the Poisson hazard.
+- `notebooks/3_coupled_abm_full_analysis.ipynb` runs the full scenario set,
+  including the matched-hazard comparison, the income tiers and the
+  verification paths.
 
 For the single-event case the trapezoidal integral collapses to a closed form
 useful for hand checks:

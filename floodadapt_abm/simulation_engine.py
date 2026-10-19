@@ -888,6 +888,17 @@ class SimulationEngine:
         """
         return self._data.income
 
+    @property
+    def wealth(self) -> np.ndarray:
+        """
+        Wealth per agent, shape ``(n_agents,)``, ``float32``.
+
+        Read-only view of the data layer's wealth array: explicit input, or
+        income times the native wealth-to-income ratio of the agent's
+        income percentile under the synthetic lognormal port.
+        """
+        return self._data.wealth
+
     def expected_annual_damages(
         self, use_adapted_strategy: bool = False
     ) -> np.ndarray:

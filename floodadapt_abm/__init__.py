@@ -163,6 +163,7 @@ from floodadapt_abm.analysis import (
     current_uptake,
     damage_per_year,
     household_cost_per_year,
+    perception_curve,
     scenario_summary,
     uptake_statistics,
 )
@@ -214,6 +215,7 @@ __all__ = [
     "current_uptake",
     "damage_per_year",
     "household_cost_per_year",
+    "perception_curve",
     "scenario_summary",
     "uptake_statistics",
 ]

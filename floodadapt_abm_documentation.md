@@ -503,6 +503,7 @@ income_percentile_per_agent=None)`.
 | `run(slr_values, no_seq=1, seed=None, interp_method='linear', track_eu=False, n_jobs=1)` | run `no_seq` Monte-Carlo sequences; `n_jobs>1` parallelises across a thread pool of engine clones sharing a pre-warmed read-only cache |
 | `is_residential` (property) | boolean mask (all `True` — engine already operates on residential agents) |
 | `income` (property) | per-agent annual income, `(n_agents,)` float32 (explicit input or the synthetic lognormal port) |
+| `wealth` (property) | per-agent wealth, `(n_agents,)` float32 (explicit input, or income times the native wealth-to-income ratio of the agent's percentile) |
 | `expected_annual_damages(use_adapted_strategy=False)` | per-agent EAD at the SLR last passed to `prepare_damages` |
 | `clear_cache()` | free the memoised per-SLR interpolation results (~90 MB per SLR value on the real table); call it between runs in long notebooks or batch scripts |
 
@@ -725,7 +726,7 @@ examples_engine/         numbered runnable learning path (01 … 08) + README
   06_mesa_native_driving.py    verification-mirror demo
   07_mesa_native_full.py       preferred-path demo (+ inline bit-parity)
   08_income_perception_insurance.py  incomes, severity exponent, Poisson, insurance
-tests/                   full pytest suite (290 tests; self-contained mock datasets)
+tests/                   full pytest suite (295 tests; self-contained mock datasets)
   test_mesa_native_full.py     22 tests: triple bit-parity, honeybees clock,
                                object graph/adapter, staleness guard, native path
   test_analysis.py             stock vs cumulative uptake, damage/cost aggregates,
@@ -745,7 +746,7 @@ Run everything (set `DYNAMO_M_PATH` to enable the native-parity tests):
 
 ```powershell
 $env:DYNAMO_M_PATH = "c:\repos\DYNAMO-M\DYNAMO-M"
-pytest -q            # 290 passed
+pytest -q            # 295 passed
 ```
 
 Guarded tests skip cleanly when honeybees or DYNAMO-M is unavailable.
@@ -823,6 +824,7 @@ per-year outputs are `(no_seq, n_years)` `float64`; money is in units of
 | `ead_summary(ead)` | `mean`, `median`, `p99`, `share_zero` of the risk pool |
 | `affordability_table(ead, income, expenditure_cap, deductible, high_risk_quantile=0.9)` | median premium and affordable shares (all households, high-risk tail) per rating rule; affordable means premium `< expenditure_cap · income` |
 | `affordability_vs_subsidy(ead, income, expenditure_cap, deductible, subsidies, high_risk_quantile=0.9)` | affordable share of the tail per subsidy depth and rating rule (monotone in the subsidy) |
+| `perception_curve(decision, severity, years=10)` | risk perception after a single flood, year by year, `(n_severity, years + 1)`; mirrors `SimulationEngine.update_flood_experience` (severity peak `risk_perc_max · s ** γ`, or `risk_perc_max` in binary mode, decaying as `1.6 ** (risk_perc_coef · τ)` above `risk_perc_min`) |
 
 ```python
 from floodadapt_abm import analysis
@@ -862,6 +864,8 @@ labels get the default colour cycle.
 | `plot_insurance_overview(years, scenarios, reference, cap_budget, styles=None, reference_label="R1", reference_color="k", ...)` | six panels (2 × 3): ever insured, currently insured, floodproofing (crowding-out check against the reference), mean offered premium vs the affordability budget, household cost per year vs the reference's gross damage, cumulative household cost |
 | `plot_subsidy_experiment(years, scenarios, reference, styles=None, reference_label="R1", reference_color="k", cap_budget=None, ...)` | six panels (2 × 3): ever insured, currently insured, floodproofing, mean offered premium (budget line when `cap_budget` is given), cumulative avoided damage vs the reference (negative = more damage), cumulative household cost vs the reference's cumulative gross damage |
 | `plot_affordability_curve(subsidies, shares, ax=None, styles=None, ...)` | affordable share of the high-risk tail vs subsidy depth (`analysis.affordability_vs_subsidy` output) |
+| `plot_agent_profile(max_pot_dmg, income, median_income=None, axes=None, ...)` | two panels: household income distribution (log axis, median marked) and building value vs income as a log-log hexbin titled with their rank correlation |
+| `plot_perception_response(decision, severities=(0.05, 0.2, 1.0), years=10, ax=None, ...)` | risk perception after one flood of each severity (`analysis.perception_curve`), with the no-flood floor |
 
 ```python
 from floodadapt_abm import plotting

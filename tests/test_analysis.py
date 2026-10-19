@@ -242,6 +242,41 @@ def test_scenario_summary_rows_and_reference(
 
 
 # ---------------------------------------------------------------------------
+# Risk perception
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("mode", ["severity", "binary"])
+def test_perception_curve_matches_engine(mode):
+    """One flood, then dry years: the engine and the curve agree."""
+    cfg = historical_modes_config(perception_mode=mode)
+    engine = SimulationEngine(ds=make_mock_dataset(), config=cfg)
+    n = engine.n_agents
+    severity = np.linspace(0.05, 1.0, n)
+    years = 6
+
+    engine.update_flood_experience(np.ones(n, dtype=bool), severity)
+    observed = [engine.state.risk_perception.copy()]
+    for _ in range(years):
+        engine.update_flood_experience(np.zeros(n, dtype=bool), severity)
+        observed.append(engine.state.risk_perception.copy())
+    observed = np.stack(observed, axis=1)
+
+    expected = an.perception_curve(cfg.decision, severity, years)
+    assert expected.shape == (n, years + 1)
+    np.testing.assert_allclose(observed, expected, rtol=1e-6)
+
+
+def test_perception_curve_shape_and_bounds():
+    cfg = historical_modes_config(perception_mode="severity")
+    curves = an.perception_curve(cfg.decision, [0.0, 0.25, 1.0], years=4)
+    dec = cfg.decision
+    np.testing.assert_allclose(curves[0], dec.risk_perc_min)        # no damage
+    np.testing.assert_allclose(curves[2, 0], dec.risk_perc_max + dec.risk_perc_min)
+    assert (np.diff(curves, axis=1) <= 1e-12).all()                 # decays
+    assert (np.diff(curves[:, 0]) >= 0).all()                       # monotone in s
+
+
+# ---------------------------------------------------------------------------
 # Affordability diagnostics
 # ---------------------------------------------------------------------------
 

@@ -54,6 +54,10 @@ INSURANCE_KEYS: tuple[str, ...] = (
 PRICING_COMMUNITY: str = "community (flat)"
 PRICING_RISK_BASED: str = "risk-based"
 
+#: Base of the risk-perception decay, hard-coded in native DYNAMO-M
+#: (``flood_risk.py:650-651``) and mirrored by the engine.
+RISK_PERC_BASE: float = 1.6
+
 
 # ---------------------------------------------------------------------------
 # Validation helpers
@@ -613,6 +617,61 @@ def scenario_summary(
                     row[name] = np.nan
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Risk perception (no simulation needed)
+# ---------------------------------------------------------------------------
+
+def perception_curve(
+    decision,
+    severity: float | np.ndarray,
+    years: int = 10,
+) -> np.ndarray:
+    """
+    Risk perception of a household after a single flood, year by year.
+
+    Mirrors :meth:`SimulationEngine.update_flood_experience`: the flood
+    resets the timer to 0, and perception then decays as
+    ``peak * 1.6 ** (risk_perc_coef * tau) + risk_perc_min``.  Under
+    ``perception_mode="severity"`` the peak is
+    ``risk_perc_max * s ** perception_severity_exponent``; under
+    ``"binary"`` it is ``risk_perc_max`` for any flood.
+
+    Parameters
+    ----------
+    decision : DecisionConfig
+        Behaviour settings (perception parameters and mode).
+    severity : float or np.ndarray
+        Damage severity of the flood, realised damage over building value,
+        in ``[0, 1]``.  An array gives one curve per value.
+    years : int
+        Years after the flood to evaluate.  Default ``10``.
+
+    Returns
+    -------
+    np.ndarray[float64]
+        Shape ``(n_severity, years + 1)``; column ``tau`` is the perception
+        ``tau`` years after the flood (column 0 is the flood year).
+    """
+    s = np.clip(np.atleast_1d(np.asarray(severity, dtype=np.float64)), 0.0, 1.0)
+    if decision.perception_mode == "severity":
+        gamma = decision.perception_severity_exponent
+        if gamma <= 0.0:
+            raise ValueError(
+                f"perception_severity_exponent must be > 0; got {gamma}."
+            )
+        peak = decision.risk_perc_max * s ** gamma
+    elif decision.perception_mode == "binary":
+        peak = np.full_like(s, decision.risk_perc_max)
+    else:
+        raise ValueError(
+            f"Unknown perception_mode {decision.perception_mode!r}; "
+            "expected 'binary' or 'severity'."
+        )
+    tau = np.arange(years + 1, dtype=np.float64)
+    decay = RISK_PERC_BASE ** (decision.risk_perc_coef * tau)
+    return peak[:, None] * decay[None, :] + decision.risk_perc_min
 
 
 # ---------------------------------------------------------------------------

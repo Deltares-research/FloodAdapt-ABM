@@ -34,6 +34,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
+from matplotlib.ticker import FuncFormatter
 
 from floodadapt_abm import analysis as an
 
@@ -578,7 +579,7 @@ def plot_insurance_overview(
                    color=color, ls=ls, lw=LINE_LW, label=label)
         ax[5].plot(years, an.cumulative_household_cost(res, scale).mean(axis=0),
                    color=color, ls=ls, lw=LINE_LW, label=label)
-    ax[3].axhline(cap_budget, color=reference_color, ls=":", lw=1.6,
+    ax[3].axhline(cap_budget, color="k", ls=":", lw=1.6,
                   label="affordability budget (cap x median income)")
     ax[4].plot(years, an.damage_per_year(reference["damage_history"], scale).mean(axis=0),
                color=reference_color, ls="--", lw=LINE_LW,
@@ -671,9 +672,9 @@ def plot_subsidy_experiment(
         ax[5].plot(years, an.cumulative_household_cost(res, scale).mean(axis=0),
                    color=color, ls=ls, lw=LINE_LW, label=label)
     if cap_budget is not None:
-        ax[3].axhline(cap_budget, color=reference_color, ls=":", lw=1.6,
+        ax[3].axhline(cap_budget, color="k", ls=":", lw=1.6,
                       label="affordability budget (cap x median income)")
-    ax[4].axhline(0.0, color=reference_color, lw=1.0, ls=":")
+    ax[4].axhline(0.0, color="k", lw=1.0, ls=":")
     ax[5].plot(years, ref_cum, color=reference_color, ls="--", lw=LINE_LW,
                label=f"{reference_label} gross damage")
     _label_panels(
@@ -691,6 +692,138 @@ def plot_subsidy_experiment(
     )
     if title:
         fig.suptitle(title, y=1.02)
+    return _finish(fig, save_path)
+
+
+def plot_agent_profile(
+    max_pot_dmg: np.ndarray,
+    income: np.ndarray,
+    median_income: float | None = None,
+    axes: np.ndarray | None = None,
+    title: str | None = None,
+    save_path: str | Path | None = None,
+) -> Figure:
+    """
+    Who the agents are: the income distribution, and how income relates to
+    building value.
+
+    Panels: (a) histogram of household income on a log axis, with the
+    median marked, (b) building value against income as a log-log hexbin,
+    titled with the Spearman rank correlation between the two.
+
+    Parameters
+    ----------
+    max_pot_dmg : np.ndarray
+        Building value (maximum potential damage) per agent.
+    income : np.ndarray
+        Annual income per agent, same shape.
+    median_income : float or None
+        Regional median to mark in panel (a); ``None`` marks the agents'
+        own median.  Default ``None``.
+    axes : array-like of Axes or None
+        Two axes to draw into.  Default ``None``.
+    title : str or None
+        Figure title.  Default ``None``.
+    save_path : str, Path or None
+        File to save the figure to.  Default ``None``.
+
+    Returns
+    -------
+    Figure
+    """
+    value = np.asarray(max_pot_dmg, dtype=np.float64)
+    inc = np.asarray(income, dtype=np.float64)
+    keep = (value > 0) & (inc > 0)
+    value, inc = value[keep], inc[keep]
+    median = float(np.median(inc)) if median_income is None else float(median_income)
+
+    fig, ax = _panels(axes, 2, (12, 4.4))
+    # Coarse bins: synthetic incomes sit on 99 percentile steps, so fine bins
+    # would show spikes that are an artefact of the steps.
+    bins = np.logspace(np.log10(inc.min()), np.log10(inc.max()), 25)
+    ax[0].hist(inc, bins=bins, color="C0", alpha=0.8)
+    ax[0].set_xscale("log")
+    ax[0].axvline(median, color="k", ls="--", lw=1.4,
+                  label=f"median ${median:,.0f}")
+    ax[0].set_title("(a) Household income")
+    ax[0].set_xlabel("Annual income ($, log scale)")
+    ax[0].set_ylabel("Number of households")
+    ax[0].legend(fontsize=8)
+
+    # Spearman rank correlation: Pearson correlation of the ranks.
+    ranks = np.argsort(np.argsort(np.stack([value, inc])), axis=1)
+    rho = float(np.corrcoef(ranks)[0, 1])
+    hb = ax[1].hexbin(value, inc, xscale="log", yscale="log", gridsize=40,
+                      mincnt=1, cmap="viridis", bins="log")
+    cbar = fig.colorbar(hb, ax=ax[1], label="Households per cell (log scale)")
+    # Plain counts (1, 10, 100) instead of the default 10^n labels.
+    plain = FuncFormatter(lambda v, _pos: f"{v:,.0f}")
+    cbar.ax.yaxis.set_major_formatter(plain)
+    cbar.ax.yaxis.set_minor_formatter(FuncFormatter(lambda _v, _pos: ""))
+    ax[1].set_title(f"(b) Building value vs income (rank correlation {rho:.2f})")
+    ax[1].set_xlabel("Building value ($, log scale)")
+    ax[1].set_ylabel("Annual income ($, log scale)")
+    if title:
+        fig.suptitle(title, y=1.02)
+    return _finish(fig, save_path)
+
+
+def plot_perception_response(
+    decision,
+    severities: tuple[float, ...] = (0.05, 0.2, 1.0),
+    years: int = 10,
+    ax: Axes | None = None,
+    title: str = "Risk perception after a single flood",
+    save_path: str | Path | None = None,
+) -> Figure:
+    """
+    How risk perception jumps after a flood and fades again.
+
+    One line per flood severity (realised damage over building value),
+    from :func:`floodadapt_abm.analysis.perception_curve`, plus the floor a
+    household returns to without floods.
+
+    Parameters
+    ----------
+    decision : DecisionConfig
+        Behaviour settings.
+    severities : tuple[float, ...]
+        Flood severities to draw.  Default 5 %, 20 % and a total loss.
+    years : int
+        Years after the flood.  Default ``10``.
+    ax : Axes or None
+        Panel to draw into.  Default ``None`` (new ``7 x 4.2`` figure).
+    title : str
+        Panel title.
+    save_path : str, Path or None
+        File to save the figure to.  Default ``None``.
+
+    Returns
+    -------
+    Figure
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(7, 4.2))
+    else:
+        fig = ax.figure
+    curves = an.perception_curve(decision, np.asarray(severities), years)
+    tau = np.arange(years + 1)
+    # Severity is ordered, so use a sequential palette (light = mild flood)
+    # rather than the categorical cycle that marks runs elsewhere.
+    shades = plt.get_cmap("plasma_r")(np.linspace(0.25, 0.85, len(severities)))
+    for shade, s, curve in zip(shades, severities, curves):
+        label = ("a total loss" if s >= 1.0
+                 else f"flood costing {100 * s:.0f}% of the building")
+        ax.plot(tau, curve, color=shade, lw=LINE_LW, marker="o", ms=4,
+                label=label)
+    ax.axhline(decision.risk_perc_min, color="k", ls=":", lw=1.2,
+               label="floor without floods")
+    ax.set_xlabel("Years since the flood")
+    ax.set_ylabel("Risk perception (multiplier on probability)")
+    ax.set_title(title)
+    ax.set_xticks(tau)
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
     return _finish(fig, save_path)
 
 

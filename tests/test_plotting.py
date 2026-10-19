@@ -208,6 +208,29 @@ def test_affordability_curve(tmp_path):
     assert out.exists() and out.stat().st_size > 0
 
 
+def test_agent_profile_panels():
+    rng = np.random.default_rng(1)
+    value = rng.lognormal(12.4, 0.5, 400)
+    income = rng.lognormal(11.4, 0.9, 400)
+    fig = pl.plot_agent_profile(value, income, median_income=88_494.0)
+    axes = [a for a in _primary_axes(fig) if a.get_label() != "<colorbar>"]
+    assert len(axes) == 2
+    assert axes[0].get_xscale() == "log"
+    assert "rank correlation" in axes[1].get_title()
+    labels = [t.get_text() for t in axes[0].get_legend().get_texts()]
+    assert labels == ["median $88,494"]
+
+
+def test_perception_response_lines():
+    cfg = historical_modes_config(perception_mode="severity")
+    fig = pl.plot_perception_response(cfg.decision, severities=(0.1, 1.0), years=5)
+    ax = _primary_axes(fig)[0]
+    assert len(ax.lines) == 3                   # two severities + floor
+    np.testing.assert_allclose(
+        ax.lines[0].get_ydata(), an.perception_curve(cfg.decision, 0.1, 5)[0]
+    )
+
+
 def test_caller_supplied_axes_are_used(adapt_results, baseline_results):
     fig, axes = plt.subplots(1, 4, figsize=(12, 3))
     out = pl.plot_adaptation_overview(YEARS, SLR, adapt_results, baseline_results,
